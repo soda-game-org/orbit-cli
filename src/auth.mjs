@@ -17,7 +17,7 @@ function memoryStorage() {
   }
 }
 
-function client() {
+function createOrbitClient() {
   return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     auth: {
       flowType: 'pkce',
@@ -54,12 +54,14 @@ async function closeServer(server) {
 }
 
 export class OrbitAuth {
-  constructor(credentials) {
+  constructor(credentials, { clientFactory = createOrbitClient, fetchImpl = fetch } = {}) {
     this.credentials = credentials
+    this.clientFactory = clientFactory
+    this.fetchImpl = fetchImpl
   }
 
   async login({ open = openExternal, timeoutMs = LOGIN_TIMEOUT_MS } = {}) {
-    const supabase = client()
+    const supabase = this.clientFactory()
     const nonce = randomBytes(32).toString('base64url')
     const callbackPath = `/oauth/callback/${nonce}`
     let expectedHost = ''
@@ -139,7 +141,7 @@ export class OrbitAuth {
   async logout() {
     const session = await this.#load()
     if (session?.access_token) {
-      await fetch(`${SUPABASE_URL}/auth/v1/logout?scope=local`, {
+      await this.fetchImpl(`${SUPABASE_URL}/auth/v1/logout?scope=local`, {
         method: 'POST',
         headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${session.access_token}` },
       }).catch(() => undefined)
@@ -165,7 +167,7 @@ export class OrbitAuth {
     if (!current?.access_token || !current?.refresh_token) throw new Error('Sign in first with `orbit auth login`')
     const expiresAt = Number(current.expires_at || 0)
     if (expiresAt > Math.floor(Date.now() / 1000) + 60) return current
-    const supabase = client()
+    const supabase = this.clientFactory()
     const refreshed = await supabase.auth.refreshSession({ refresh_token: current.refresh_token })
     if (refreshed.error || !refreshed.data.session) {
       await this.credentials.delete(SESSION_ACCOUNT)

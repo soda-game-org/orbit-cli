@@ -1,4 +1,4 @@
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 export const API_ORIGIN = 'https://api.orbit-spaces.com'
 export const WEB_ORIGIN = 'https://orbit-arcade.com'
 export const SUPABASE_URL = 'https://tidzpggdiaaweoasskqe.supabase.co'
