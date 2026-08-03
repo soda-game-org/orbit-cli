@@ -1,0 +1,51 @@
+{
+  "name": "@the-super-engine/orbit-cli",
+  "version": "0.1.0",
+  "description": "Open-source local CLI and Web CLI for Orbit Arcade",
+  "type": "module",
+  "license": "MIT",
+  "author": "SODA GAME",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/the-super-engine/orbit-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/the-super-engine/orbit-cli/issues"
+  },
+  "homepage": "https://github.com/the-super-engine/orbit-cli#readme",
+  "keywords": [
+    "orbit",
+    "arcade",
+    "cli",
+    "game-development"
+  ],
+  "private": false,
+  "bin": {
+    "orbit": "./bin/orbit.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "README.md",
+    "SECURITY.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "audit:public": "node scripts/audit-public.mjs",
+    "check": "npm run test && npm run audit:public",
+    "prepack": "npm run check"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^1.3.0",
+    "@supabase/supabase-js": "^2.105.0"
+  }
+}
