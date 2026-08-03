@@ -4,7 +4,7 @@ import process from 'node:process'
 
 const root = path.resolve(new URL('..', import.meta.url).pathname)
 const ignored = new Set(['.git', 'node_modules', 'coverage'])
-const allowedTopLevel = new Set(['.github', '.gitignore', 'LICENSE', 'NOTICE.md', 'README.md', 'SECURITY.md', 'bin', 'package-lock.json', 'package.json', 'scripts', 'skills', 'src', 'test'])
+const allowedTopLevel = new Set(['.github', '.gitignore', 'LICENSE', 'NOTICE.md', 'README.md', 'README.zh-CN.md', 'SECURITY.md', 'bin', 'package-lock.json', 'package.json', 'scripts', 'skills', 'src', 'test'])
 const forbiddenNames = new Set(['.env', '.dev.vars', 'id_rsa', 'id_ed25519'])
 const privateSkillFiles = []
 const findings = []
