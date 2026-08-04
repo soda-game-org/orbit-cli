@@ -16,6 +16,11 @@ const forbiddenContent = [
   [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, 'private key'],
   [/\bsk-[A-Za-z0-9_-]{20,}/g, 'provider secret'],
   [/(?:^|["'])\/(?:Users|home)\/[^\s"']+/gm, 'absolute developer path'],
+  [/\b(?:codex|opencode|devin|cline|aider)\b/gi, 'third-party agent comparison'],
+  [/\bclaude[ _-]?code\b/gi, 'third-party agent comparison'],
+  [/\bpi[ _-]?agent\b/gi, 'third-party agent comparison'],
+  [/\bmariozechner\b/gi, 'third-party agent implementation reference'],
+  [/\bCursor\b/g, 'third-party editor comparison'],
 ]
 
 async function visit(directory, prefix = '') {
@@ -35,7 +40,10 @@ async function visit(directory, prefix = '') {
     if (bytes.includes(0)) continue
     const text = bytes.toString('utf8')
     if (relative !== 'scripts/audit-public.mjs') {
-      for (const [pattern, label] of forbiddenContent) if (pattern.test(text)) findings.push(`${relative}: ${label}`)
+      for (const [pattern, label] of forbiddenContent) {
+        pattern.lastIndex = 0
+        if (pattern.test(text)) findings.push(`${relative}: ${label}`)
+      }
     }
   }
 }
@@ -51,5 +59,5 @@ if (findings.length) {
   console.error(`Public release audit failed:\n${[...new Set(findings)].map((finding) => `- ${finding}`).join('\n')}`)
   process.exitCode = 1
 } else {
-  console.log('Public release audit passed: no private trees, credentials, private skills or symbolic links found.')
+  console.log('Public release audit passed: no private trees, credentials, private skills, third-party agent comparisons or symbolic links found.')
 }
