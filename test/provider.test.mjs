@@ -193,3 +193,18 @@ test('shared Replicate 3D transport resumes a persisted prediction and trusts on
   assert.equal(persisted.some((entry) => entry.predictionId === 'prediction-1'), true)
   assert.throws(() => validateReplicateDeliveryUrl('https://example.com/model.glb'), /untrusted/)
 })
+
+test('shared Replicate 3D transport marks a definitive provider rejection safe to retry', async () => {
+  const state = {}
+  const persisted = []
+  await assert.rejects(generateReplicateModel3d({
+    apiKey: 'replicate-key',
+    prompt: 'Original low-poly arcade hover car',
+    state,
+    persist: async (next) => persisted.push({ ...next }),
+    fetchImpl: async () => new Response(JSON.stringify({ detail: 'invalid input' }), { status: 400 }),
+  }), /invalid input/)
+  assert.equal(state.requestPending, false)
+  assert.equal(persisted.at(-1).requestPending, false)
+  assert.equal(Object.hasOwn(state, 'predictionId'), false)
+})
