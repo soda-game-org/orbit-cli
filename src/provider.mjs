@@ -6,7 +6,7 @@ import {
   codingProvider,
   completeWithProvider,
   discoverProviderModels,
-} from './provider-core.mjs'
+} from '../packages/orbit-provider-core/index.mjs'
 import { publicError } from './util.mjs'
 
 const CLI_OPENROUTER_HEADERS = Object.freeze({
