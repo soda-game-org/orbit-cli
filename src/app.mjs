@@ -26,6 +26,6 @@ export function createApplication({ directories = appDirectories(), fetchImpl = 
   const publishFactory = (api) => new PublishService(api)
   return {
     asset3d, auth, byok, cloudLogs, config, credentials, directories, manager, store, threeD, apiFactory, publishFactory,
-    web: () => new WebCliServer({ asset3d, manager, auth, config, credentials, store, apiFactory, publishFactory, directories }),
+    web: () => new WebCliServer({ asset3d, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories }),
   }
 }

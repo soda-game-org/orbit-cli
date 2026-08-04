@@ -32,6 +32,19 @@ function authView() {
   $('auth-button').textContent = state.auth.signedIn ? 'Sign out' : 'Sign in'
 }
 
+function providerView() {
+  const discoverable = state.providers?.some((provider) => provider.id === $('provider').value && provider.modelDiscovery)
+  $('browse-models').disabled = !discoverable
+  $('browse-models').title = discoverable ? 'Load tool-capable models from OpenRouter' : 'Enter a model ID from this provider'
+  if (!discoverable) $('model-options').replaceChildren()
+}
+
+function providerOptions() {
+  const option = (provider) => { const item = document.createElement('option'); item.value = provider.id; item.textContent = provider.label; return item }
+  $('provider').replaceChildren(...(state.providers || []).filter((provider) => provider.purpose === 'coding').map(option))
+  $('key-provider').replaceChildren(...(state.providers || []).map(option))
+}
+
 function runView() {
   $('runs').replaceChildren(...state.runs.map((run) => {
     const item = document.createElement('article'); item.className = 'run'
@@ -58,9 +71,10 @@ function action(label, onClick) { const button = document.createElement('button'
 async function refresh() {
   const body = await api('/api/bootstrap')
   state = body; authView(); runView()
+  providerOptions()
   $('cloudLogs').checked = Boolean(state.config.cloudLogs)
   const mode = document.querySelector(`input[name=mode][value=${state.config.mode || 'orbit'}]`); if (mode) mode.checked = true
-  $('provider').value = state.config.provider || 'openrouter'; $('runtime').value = state.config.runtime || 'html'; $('model').value = state.config.model || ''
+  $('provider').value = state.config.provider || 'openrouter'; $('runtime').value = state.config.runtime || 'html'; $('model').value = state.config.model || ''; providerView()
 }
 
 async function files() {
@@ -72,6 +86,18 @@ async function files() {
 }
 
 $('references').addEventListener('change', () => { const names = Array.from($('references').files || []).map((file) => file.name); $('reference-list').textContent = names.length ? names.join(' · ') : 'No images selected' })
+$('provider').addEventListener('change', providerView)
+$('browse-models').addEventListener('click', async () => {
+  try {
+    status('Loading tool-capable OpenRouter models…')
+    const body = await api(`/api/provider/models?provider=${encodeURIComponent($('provider').value)}`)
+    $('model-options').replaceChildren(...body.models.map((model) => {
+      const option = document.createElement('option'); option.value = model.id; option.label = `${model.name}${model.vision ? ' · vision' : ''}`; return option
+    }))
+    status(`Loaded ${body.models.length} model choices; you can also enter a model ID directly`)
+    $('model').focus()
+  } catch (error) { status(error.message, true) }
+})
 $('auth-button').addEventListener('click', async () => { try { status(state.auth.signedIn ? 'Signing out…' : 'Complete sign-in in your browser…'); if (state.auth.signedIn) await api('/api/auth/logout', { method: 'POST', body: '{}' }); else await api('/api/auth/login', { method: 'POST', body: '{}' }); await refresh(); status('Session updated') } catch (error) { status(error.message, true) } })
 $('save-key').addEventListener('click', async () => { try { status('Saving key to the OS credential vault…'); await api('/api/provider', { method: 'POST', body: JSON.stringify({ provider: $('key-provider').value, apiKey: $('api-key').value }) }); $('api-key').value = ''; status('Provider key saved locally') } catch (error) { status(error.message, true) } })
 $('asset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { status('3D generation running with a durable local checkpoint…'); const body = await api('/api/assets/3d', { method: 'POST', body: JSON.stringify({ workspace: $('workspace').value, prompt: $('asset-prompt').value, output: $('asset-output').value, mode: $('asset-mode').value, cloudLogs: $('cloudLogs').checked }) }); status(`3D run ${body.run.state}: ${body.run.result?.relativePath || body.run.id}`); await refresh() } catch (error) { status(error.message, true) } })

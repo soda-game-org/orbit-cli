@@ -18,7 +18,7 @@
 Orbit CLI 需要 Node.js 22 或更高版本。
 
 ```sh
-git clone https://github.com/the-super-engine/orbit-cli.git
+git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
 npm ci
 npm link
@@ -52,13 +52,14 @@ orbit generate \
 orbit web
 ```
 
-## 使用自己的模型
+## 选择模型接入方式
 
-Orbit CLI 既可以使用 Orbit 账号，也可以接入你自己的服务商 API Key。目前支持 OpenRouter、Z.AI、DeepSeek、火山方舟，以及用于 3D 生成的 Replicate。
+Orbit CLI 提供两种模型链路：通过 Orbit OAuth 登录，使用 Orbit Cloud 和 Orbit 计费；或者填写自己的 API Key，接入 OpenRouter、OpenAI、DeepSeek、智谱 BigModel（中国区）、Z.AI（全球区）、火山方舟、Kimi（中国区）或 Kimi（全球区）。3D 生成还支持 Replicate Key。
 
 ```sh
 orbit providers set openrouter
 orbit providers list
+orbit providers models openrouter
 
 orbit generate \
   --mode byok \
@@ -66,6 +67,8 @@ orbit generate \
   --workspace "$PWD/my-game" \
   --prompt "制作一个高速霓虹赛车游戏"
 ```
+
+OpenRouter 按模型 ID 选择模型，不使用写死的模型列表；目录命令会列出声明支持工具调用的模型，也可以直接填写其他模型 ID。智谱和 Kimi 的中国区、全球区使用不同接口和不同的本地密钥槽。
 
 服务商密钥会保存在操作系统的凭据保险库中。自动化环境请使用 `--key-stdin`，不要将密钥直接写入 Shell 历史记录。
 
@@ -112,6 +115,6 @@ orbit publish <run-id>
 - 运行 `orbit --help` 查看完整命令说明。
 - 运行 `orbit capabilities` 查看当前版本支持的功能。
 - 阅读[安全策略](SECURITY.md)。
-- 从 [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases) 下载版本。
+- 从 [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases) 下载版本。
 
 Orbit CLI 由 **SODA GAME** 开发，基于 [MIT License](LICENSE) 开源。

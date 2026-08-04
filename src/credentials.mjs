@@ -1,4 +1,5 @@
 import { Entry } from '@napi-rs/keyring'
+import { PROVIDER_IDS } from './constants.mjs'
 
 const SERVICE = 'com.orbit-arcade.cli'
 
@@ -49,7 +50,7 @@ function validateAccount(account) {
 }
 
 export function providerCredentialAccount(provider) {
-  if (!['openrouter', 'zai', 'deepseek', 'ark', 'replicate'].includes(provider)) {
+  if (!PROVIDER_IDS.includes(provider)) {
     throw new TypeError('Unsupported provider')
   }
   return `provider:${provider}`

@@ -24,8 +24,8 @@
           <label class="field"><span>What should Orbit build?</span><textarea id="prompt" required rows="7" placeholder="A compact mobile-first arcade game with a complete replayable loop…"></textarea></label>
           <div class="row three">
             <label class="field"><span>Runtime</span><select id="runtime"><option value="html">HTML</option><option value="vanilla-ts">Vanilla TypeScript</option><option value="react-vite">React + Vite</option><option value="react-three-fiber">React Three Fiber</option><option value="three-vanilla">Three.js</option><option value="phaser">Phaser</option></select></label>
-            <label class="field"><span>Provider</span><select id="provider"><option value="openrouter">OpenRouter</option><option value="zai">Z.AI</option><option value="deepseek">DeepSeek</option><option value="ark">Volcengine Ark</option></select></label>
-            <label class="field"><span>Model</span><input id="model" placeholder="Automatic"></label>
+            <label class="field"><span>Provider</span><select id="provider" aria-label="Coding provider"></select></label>
+            <label class="field"><span>Model</span><div class="model-picker"><input id="model" list="model-options" placeholder="Automatic"><button id="browse-models" type="button">Browse</button></div><datalist id="model-options"></datalist></label>
           </div>
           <div class="reference-drop"><label for="references"><span>REFERENCE IMAGES</span><b>Choose PNG, JPEG, or WebP</b><small>8 files · 5 MiB each · 16 MiB total · private analysis context</small></label><input id="references" type="file" multiple accept="image/png,image/jpeg,image/webp"><output id="reference-list">No images selected</output></div>
           <div class="toggles">
@@ -35,7 +35,7 @@
           </div>
           <button class="launch" type="submit"><span>Start local agent</span><kbd>⌘ ↵</kbd></button>
         </form>
-        <section class="keys" aria-labelledby="keys-heading"><div><p>BYOK VAULT</p><h2 id="keys-heading">Provider keys</h2></div><div class="key-row"><select id="key-provider"><option value="openrouter">OpenRouter</option><option value="zai">Z.AI</option><option value="deepseek">DeepSeek</option><option value="ark">Volcengine Ark</option><option value="replicate">Replicate 3D</option></select><input id="api-key" type="password" placeholder="Stored in your OS credential vault" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div></section>
+        <section class="keys" aria-labelledby="keys-heading"><div><p>BYOK VAULT</p><h2 id="keys-heading">Provider keys</h2></div><div class="key-row"><select id="key-provider" aria-label="Key provider"></select><input id="api-key" type="password" placeholder="Stored in your OS credential vault" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div></section>
         <section class="asset-forge" aria-labelledby="asset-heading"><div><p>STANDALONE ASSET RUN</p><h2 id="asset-heading">Generate a GLB model</h2><span>Uses Orbit OAuth or your Replicate key. The job checkpoint can resume after a crash.</span></div><form id="asset-form"><textarea id="asset-prompt" required rows="3" placeholder="A stylized low-poly spacecraft with clean topology and PBR materials…"></textarea><div class="asset-row"><select id="asset-mode"><option value="orbit">Orbit OAuth</option><option value="byok">Replicate key</option></select><input id="asset-output" value="assets/models/generated.glb" aria-label="3D output path"><button type="submit">Generate GLB</button></div></form></section>
       </section>
       <aside class="run-deck" aria-labelledby="runs-heading">

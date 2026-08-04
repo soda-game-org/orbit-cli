@@ -142,6 +142,10 @@ export class RunManager {
           role: 'assistant',
           content: typeof assistant.content === 'string' ? assistant.content : '',
           ...(calls.length ? { tool_calls: calls } : {}),
+          ...(typeof assistant.reasoning_content === 'string' ? { reasoning_content: assistant.reasoning_content } : {}),
+          ...(typeof assistant.reasoning === 'string' ? { reasoning: assistant.reasoning } : {}),
+          ...(Array.isArray(assistant.reasoning_details) ? { reasoning_details: assistant.reasoning_details } : {}),
+          ...(Array.isArray(assistant.response_items) ? { response_items: assistant.response_items } : {}),
         })
         await this.store.save(run)
         await this.#event(run, 'model_completed', { success: true, iteration: run.iteration })

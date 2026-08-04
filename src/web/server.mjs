@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { sniffImage } from '../attachments.mjs'
 import { appDirectories, canonicalDirectory, collectStream, ensurePrivateDirectory, isContained, openExternal, publicError } from '../util.mjs'
 import { providerCredentialAccount } from '../credentials.mjs'
+import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../constants.mjs'
 
 const HOST = '127.0.0.1'
 const MAX_BODY = 24 * 1024 * 1024
@@ -91,8 +92,8 @@ async function safePreviewFile(root, pathname) {
 }
 
 export class WebCliServer {
-  constructor({ asset3d, manager, auth, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }) {
-    Object.assign(this, { asset3d, manager, auth, config, credentials, store, apiFactory, publishFactory, directories })
+  constructor({ asset3d, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }) {
+    Object.assign(this, { asset3d, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories })
     this.token = randomBytes(32).toString('base64url')
     this.csrf = randomBytes(32).toString('base64url')
     this.projects = new Map()
@@ -141,14 +142,22 @@ export class WebCliServer {
     }
     if (!url.pathname.startsWith('/api/') || !this.#authorized(request)) return send(response, 403, { error: 'Forbidden' })
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
-      return send(response, 200, { config: await this.config.get(), auth: await this.auth.status(), runs: await this.store.list() })
+      const providers = Object.entries(PROVIDERS).map(([id, definition]) => ({
+        id, label: definition.label, purpose: definition.purpose, vision: definition.vision, modelDiscovery: Boolean(definition.modelsPath),
+      }))
+      return send(response, 200, { config: await this.config.get(), auth: await this.auth.status(), runs: await this.store.list(), providers })
     }
     if (request.method === 'POST' && url.pathname === '/api/auth/login') return send(response, 200, await this.auth.login())
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') { await this.auth.logout(); return send(response, 200, { ok: true }) }
     if (request.method === 'POST' && url.pathname === '/api/config') return send(response, 200, await this.config.update(await bodyJson(request)))
+    if (request.method === 'GET' && url.pathname === '/api/provider/models') {
+      const provider = url.searchParams.get('provider')
+      if (!CODING_PROVIDER_IDS.includes(provider)) throw new Error('A supported coding provider is required')
+      return send(response, 200, { provider, models: await this.byok.models(provider) })
+    }
     if (request.method === 'POST' && url.pathname === '/api/provider') {
       const body = await bodyJson(request)
-      if (!['openrouter', 'zai', 'deepseek', 'ark', 'replicate'].includes(body.provider) || typeof body.apiKey !== 'string' || !body.apiKey.trim()) throw new Error('Provider and API key are required')
+      if (!PROVIDER_IDS.includes(body.provider) || typeof body.apiKey !== 'string' || !body.apiKey.trim()) throw new Error('Provider and API key are required')
       await this.credentials.set(providerCredentialAccount(body.provider), body.apiKey.trim())
       return send(response, 200, { ok: true, provider: body.provider })
     }

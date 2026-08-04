@@ -2,7 +2,7 @@
 import path from 'node:path'
 import process from 'node:process'
 import { createApplication } from './app.mjs'
-import { PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
+import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
 import { boundedString, publicError } from './util.mjs'
 
@@ -11,6 +11,7 @@ const HELP = `Orbit CLI ${VERSION}
 Usage:
   orbit auth login|status|logout
   orbit providers list|set|remove|test <provider> [--model <id>] [--key-stdin]
+  orbit providers models <provider>
   orbit generate --prompt <text> [--workspace <absolute>] [--mode orbit|byok]
                  [--provider <id>] [--model <id>] [--runtime <id>]
                  [--attach <absolute-image> ...] [--3d] [--allow-shell]
@@ -145,10 +146,14 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   if (command === 'providers') {
     if (action === 'list') {
       const rows = []
-      for (const [provider, definition] of Object.entries(PROVIDERS)) rows.push({ provider, label: definition.label, configured: Boolean(await app.credentials.get(providerCredentialAccount(provider))), vision: definition.vision })
+      for (const [provider, definition] of Object.entries(PROVIDERS)) rows.push({ provider, label: definition.label, purpose: definition.purpose, configured: Boolean(await app.credentials.get(providerCredentialAccount(provider))), vision: definition.vision, models: definition.modelsPath ? 'discoverable' : 'manual id' })
+      console.table(rows)
+    } else if (action === 'models') {
+      const provider = oneOf(target, CODING_PROVIDER_IDS, 'Provider')
+      const rows = await app.byok.models(provider)
       console.table(rows)
     } else if (['set', 'remove', 'test'].includes(action)) {
-      const provider = oneOf(target, Object.keys(PROVIDERS), 'Provider')
+      const provider = oneOf(target, PROVIDER_IDS, 'Provider')
       if (action === 'set') {
         await app.credentials.set(providerCredentialAccount(provider), await readSecret({ piped: booleanFlag(flags, 'key-stdin') }))
         console.log(`${PROVIDERS[provider].label} key saved in the OS credential vault.`)
@@ -158,13 +163,13 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
         if (provider === 'replicate') throw new Error('Replicate is tested by a real 3D request; no billable test is sent automatically')
         console.log(await app.byok.test(provider, typeof flags.model === 'string' ? flags.model : undefined) ? 'Provider connection passed.' : 'Provider response did not pass the check.')
       }
-    } else throw new Error('Usage: orbit providers list|set|remove|test <provider>')
+    } else throw new Error('Usage: orbit providers list|set|remove|test|models <provider>')
     return 0
   }
   if (command === 'generate') {
     const config = await app.config.get()
     const mode = oneOf(String(flags.mode || config.mode), ['orbit', 'byok'], 'Mode')
-    const provider = oneOf(String(flags.provider || config.provider), Object.keys(PROVIDERS).filter((value) => value !== 'replicate'), 'Provider')
+    const provider = oneOf(String(flags.provider || config.provider), CODING_PROVIDER_IDS, 'Provider')
     const runtime = oneOf(String(flags.runtime || config.runtime), [...RUNTIMES], 'Runtime')
     const cloudLogs = flags['no-cloud-logs'] === true ? false : booleanFlag(flags, 'cloud-logs', config.cloudLogs)
     const run = await app.manager.create({

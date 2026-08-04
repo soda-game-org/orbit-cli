@@ -19,8 +19,14 @@ test('protects management APIs and isolates preview content on another origin', 
   await store.transition(run, 'completed')
   const config = { get: async () => ({ mode: 'orbit' }), update: async (value) => value }
   const auth = { status: async () => ({ signedIn: false }), login: async () => ({}), logout: async () => {} }
+  let savedCredential
+  const credentials = { set: async (account, secret) => { savedCredential = { account, secret } } }
+  const byok = { models: async (provider) => {
+    assert.equal(provider, 'openrouter')
+    return [{ id: 'vendor/model', name: 'Model', vision: true }]
+  } }
   const server = new WebCliServer({
-    asset3d: {}, manager: {}, auth, config, credentials: {}, store, apiFactory: () => ({}), publishFactory: () => ({}), directories,
+    asset3d: {}, manager: {}, auth, byok, config, credentials, store, apiFactory: () => ({}), publishFactory: () => ({}), directories,
   })
   const started = await server.start({ open: false })
   t.after(() => server.close())
@@ -31,11 +37,20 @@ test('protects management APIs and isolates preview content on another origin', 
   const page = await fetch(started.origin)
   assert.equal(page.status, 200)
   assert.match(page.headers.get('content-security-policy'), /frame-src http:\/\/127\.0\.0\.1:\*/)
+  assert.match(await page.text(), /id="browse-models"/)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`)).status, 403)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: { ...headers, Origin: 'http://evil.invalid' } })).status, 403)
-  assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers })).status, 200)
+  const bootstrapResponse = await fetch(`${started.origin}/api/bootstrap`, { headers })
+  assert.equal(bootstrapResponse.status, 200)
+  const bootstrap = await bootstrapResponse.json()
+  assert.equal(bootstrap.providers.find((provider) => provider.id === 'zhipu-cn').label, 'Zhipu BigModel (China)')
   const { Origin: _origin, ...browserGetHeaders } = headers
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: browserGetHeaders })).status, 200)
+  const catalog = await fetch(`${started.origin}/api/provider/models?provider=openrouter`, { headers }).then((response) => response.json())
+  assert.deepEqual(catalog.models, [{ id: 'vendor/model', name: 'Model', vision: true }])
+  const saved = await fetch(`${started.origin}/api/provider`, { method: 'POST', headers, body: JSON.stringify({ provider: 'kimi-global', apiKey: 'test-key' }) })
+  assert.equal(saved.status, 200)
+  assert.deepEqual(savedCredential, { account: 'provider:kimi-global', secret: 'test-key' })
 
   const envelope = await fetch(`${started.origin}/api/runs/${run.id}/preview`, { method: 'POST', headers, body: '{}' }).then((response) => response.json())
   const preview = await fetch(envelope.url)
