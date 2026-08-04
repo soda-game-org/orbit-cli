@@ -1,6 +1,6 @@
 {
   "name": "@the-super-engine/orbit-provider-core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Runtime-neutral model provider transport shared by Orbit clients",
   "type": "module",
   "license": "MIT",

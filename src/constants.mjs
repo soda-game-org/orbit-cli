@@ -1,6 +1,6 @@
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../packages/orbit-provider-core/index.mjs'
 
-export const VERSION = '0.1.5'
+export const VERSION = '0.1.6'
 export const API_ORIGIN = 'https://api.orbit-spaces.com'
 export const WEB_ORIGIN = 'https://orbit-arcade.com'
 export const SUPABASE_URL = 'https://tidzpggdiaaweoasskqe.supabase.co'

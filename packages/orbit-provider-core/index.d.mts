@@ -83,3 +83,25 @@ export function discoverProviderModels(input: {
   fetchImpl?: typeof fetch
   clientHeaders?: Record<string, string>
 }): Promise<OrbitProviderModel[]>
+
+export interface OrbitReplicate3dState {
+  predictionId?: string
+  status?: string
+  requestPending?: boolean
+  outputUrl?: string
+  [key: string]: unknown
+}
+
+export function validateReplicateDeliveryUrl(value: unknown): string
+export function generateReplicateModel3d(input: {
+  apiKey: string
+  prompt: string
+  faceCount?: number
+  enablePbr?: boolean
+  state?: OrbitReplicate3dState
+  signal?: AbortSignal | null
+  fetchImpl?: typeof fetch
+  persist?: (state: OrbitReplicate3dState) => void | Promise<void>
+  onProgress?: (prediction: Record<string, unknown>) => void | Promise<void>
+  pollIntervalMs?: number
+}): Promise<{ predictionId: string; status: string; outputUrl: string }>
