@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { providerCredentialAccount } from './credentials.mjs'
 import { collectStream, id, isContained, sha256, sleep } from './util.mjs'
+import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '../packages/orbit-provider-core/index.mjs'
 
 const MODEL = 'tencent/hunyuan-3d-3.1'
 const MAX_MODEL_BYTES = 64 * 1024 * 1024
@@ -37,30 +38,6 @@ async function writeGlb(workspace, output, bytes) {
   await fs.writeFile(temporary, bytes, { mode: 0o644, flag: 'wx' })
   await fs.rename(temporary, target)
   return { path: target, relativePath: path.relative(root, target).split(path.sep).join('/'), sha256: sha256(bytes), bytes: bytes.byteLength }
-}
-
-function outputUrl(value) {
-  if (typeof value === 'string' && value.startsWith('https://')) return value
-  if (Array.isArray(value)) {
-    for (const item of value) { const found = outputUrl(item); if (found) return found }
-  }
-  if (value && typeof value === 'object') {
-    for (const key of ['glb', 'mesh', 'model', 'output']) {
-      const found = outputUrl(value[key]); if (found) return found
-    }
-  }
-  return null
-}
-
-function validateDeliveryUrl(value) {
-  if (!value) throw new Error('Replicate returned no GLB download URL')
-  const url = new URL(value)
-  const host = url.hostname.toLowerCase()
-  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')
-    || (host !== 'replicate.delivery' && !host.endsWith('.replicate.delivery'))) {
-    throw new Error('Replicate returned an untrusted model download URL')
-  }
-  return url
 }
 
 export class ThreeDService {
@@ -126,41 +103,18 @@ export class ThreeDService {
     const token = await this.credentials.get(providerCredentialAccount('replicate'))
     if (!token) throw new Error('No Replicate API key is configured')
     const state = input.state || {}
-    if (!state.predictionId) {
-      state.requestPending = true
-      await input.persist?.(state)
-      const response = await this.fetchImpl(`https://api.replicate.com/v1/models/${MODEL}/predictions`, {
-        method: 'POST', signal: input.signal,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: {
-          prompt: String(input.prompt).slice(0, 8_000),
-          face_count: Math.min(1_500_000, Math.max(40_000, Number(input.faceCount) || 100_000)),
-          generate_type: 'Normal',
-          enable_pbr: input.enablePbr !== false,
-        } }),
-      })
-      const body = await responseJson(response)
-      if (!response.ok || !body?.id) throw new Error(body?.detail || `Replicate 3D request failed (${response.status})`)
-      state.predictionId = body.id
-      state.status = body.status
-      state.requestPending = false
-      await input.persist?.(state)
-    }
-    let prediction
-    while (true) {
-      const response = await this.fetchImpl(`https://api.replicate.com/v1/predictions/${encodeURIComponent(state.predictionId)}`, {
-        signal: input.signal, headers: { Authorization: `Bearer ${token}` },
-      })
-      prediction = await responseJson(response)
-      if (!response.ok || !prediction) throw new Error(`Replicate 3D polling failed (${response.status})`)
-      state.status = prediction.status
-      await input.persist?.(state)
-      await input.onProgress?.(prediction)
-      if (['succeeded', 'failed', 'canceled'].includes(prediction.status)) break
-      await sleep(5_000, input.signal)
-    }
-    if (prediction.status !== 'succeeded') throw new Error(`Replicate 3D generation ${prediction.status}: ${prediction.error || 'unknown error'}`)
-    const url = validateDeliveryUrl(outputUrl(prediction.output))
+    const generated = await generateReplicateModel3d({
+      apiKey: token,
+      prompt: input.prompt,
+      faceCount: input.faceCount,
+      enablePbr: input.enablePbr,
+      state,
+      signal: input.signal,
+      fetchImpl: this.fetchImpl,
+      persist: input.persist,
+      onProgress: input.onProgress,
+    })
+    const url = validateReplicateDeliveryUrl(generated.outputUrl)
     const response = await this.fetchImpl(url, { redirect: 'error', signal: input.signal })
     if (!response.ok) throw new Error(`Replicate model download failed (${response.status})`)
     const bytes = await collectStream(response.body, MAX_MODEL_BYTES)

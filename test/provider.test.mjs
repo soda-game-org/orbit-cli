@@ -3,6 +3,7 @@ import test from 'node:test'
 import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
 import { ByokProvider } from '../src/provider.mjs'
+import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '../packages/orbit-provider-core/index.mjs'
 
 class MemoryCredentials {
   constructor(entries = {}) { this.entries = new Map(Object.entries(entries)) }
@@ -169,4 +170,26 @@ test('DeepSeek preserves reasoning content and omits unsupported tool controls',
     { role: 'tool', tool_call_id: 'call_ds', content: '{"files":[]}' },
   ], tools })
   assert.equal(requests[1].messages[1].reasoning_content, 'I should inspect the files.')
+})
+
+test('shared Replicate 3D transport resumes a persisted prediction and trusts only delivery hosts', async () => {
+  const state = {}
+  const persisted = []
+  const calls = []
+  const result = await generateReplicateModel3d({
+    apiKey: 'replicate-key',
+    prompt: 'Original low-poly arcade hover car',
+    state,
+    persist: async (next) => persisted.push({ ...next }),
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init })
+      if (String(url).includes('/models/')) return new Response(JSON.stringify({ id: 'prediction-1', status: 'starting' }))
+      return new Response(JSON.stringify({ status: 'succeeded', output: { glb: 'https://files.replicate.delivery/model.glb' } }))
+    },
+  })
+  assert.deepEqual(result, { predictionId: 'prediction-1', status: 'succeeded', outputUrl: 'https://files.replicate.delivery/model.glb' })
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer replicate-key')
+  assert.equal(calls[1].init.headers.Authorization, 'Bearer replicate-key')
+  assert.equal(persisted.some((entry) => entry.predictionId === 'prediction-1'), true)
+  assert.throws(() => validateReplicateDeliveryUrl('https://example.com/model.glb'), /untrusted/)
 })

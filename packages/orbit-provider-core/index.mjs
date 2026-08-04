@@ -296,3 +296,76 @@ export async function discoverProviderModels({ provider, apiKey, signal, fetchIm
   if (!response.ok) throw providerError(json, response.status)
   return parseProviderModels(json)
 }
+
+function replicateOutputUrl(value) {
+  if (typeof value === 'string' && value.startsWith('https://')) return value
+  if (Array.isArray(value)) {
+    for (const item of value) { const found = replicateOutputUrl(item); if (found) return found }
+  }
+  if (value && typeof value === 'object') {
+    for (const key of ['glb', 'mesh', 'model', 'output']) {
+      const found = replicateOutputUrl(value[key]); if (found) return found
+    }
+  }
+  return null
+}
+
+export function validateReplicateDeliveryUrl(value) {
+  if (!value) throw new Error('Replicate returned no GLB download URL')
+  const url = new URL(value)
+  const host = url.hostname.toLowerCase()
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')
+    || (host !== 'replicate.delivery' && !host.endsWith('.replicate.delivery'))) {
+    throw new Error('Replicate returned an untrusted model download URL')
+  }
+  return url.href
+}
+
+export async function generateReplicateModel3d({
+  apiKey, prompt, faceCount = 100_000, enablePbr = true, state = {},
+  signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
+}) {
+  const token = String(apiKey || '').trim()
+  if (!token) throw new Error('No Replicate API key is configured')
+  const model = PROVIDERS.replicate.defaultModel
+  if (!state.predictionId) {
+    state.requestPending = true
+    await persist?.(state)
+    const response = await fetchImpl(`https://api.replicate.com/v1/models/${model}/predictions`, {
+      method: 'POST', signal,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: {
+        prompt: String(prompt || '').slice(0, 8_000),
+        face_count: Math.min(1_500_000, Math.max(40_000, Number(faceCount) || 100_000)),
+        generate_type: 'Normal',
+        enable_pbr: enablePbr !== false,
+      } }),
+    })
+    const body = await responseJson(response)
+    if (!response.ok || typeof body?.id !== 'string' || !body.id) {
+      throw Object.assign(new Error(body?.detail || `Replicate 3D request failed (${response.status})`), { status: response.status })
+    }
+    state.predictionId = body.id
+    state.status = body.status
+    state.requestPending = false
+    await persist?.(state)
+  }
+  while (true) {
+    const response = await fetchImpl(`https://api.replicate.com/v1/predictions/${encodeURIComponent(state.predictionId)}`, {
+      signal, headers: { Authorization: `Bearer ${token}` },
+    })
+    const prediction = await responseJson(response)
+    if (!response.ok || !prediction) throw Object.assign(new Error(`Replicate 3D polling failed (${response.status})`), { status: response.status })
+    state.status = prediction.status
+    await persist?.(state)
+    await onProgress?.(prediction)
+    if (['succeeded', 'failed', 'canceled'].includes(prediction.status)) {
+      if (prediction.status !== 'succeeded') throw new Error(`Replicate 3D generation ${prediction.status}: ${prediction.error || 'unknown error'}`)
+      const outputUrl = validateReplicateDeliveryUrl(replicateOutputUrl(prediction.output))
+      state.outputUrl = outputUrl
+      await persist?.(state)
+      return { predictionId: state.predictionId, status: prediction.status, outputUrl }
+    }
+    await retryDelay(Math.min(30_000, Math.max(250, Number(pollIntervalMs) || 5_000)), signal)
+  }
+}
