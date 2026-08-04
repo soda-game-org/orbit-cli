@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { appDirectories, readJson, writeJsonAtomic } from './util.mjs'
+import { CODING_PROVIDER_IDS } from './constants.mjs'
 
 const DEFAULT_CONFIG = Object.freeze({
   version: 1,
@@ -30,7 +31,7 @@ export class ConfigStore {
 
 function normalizeConfig(value) {
   const mode = value.mode === 'byok' ? 'byok' : 'orbit'
-  const provider = ['openrouter', 'zai', 'deepseek', 'ark'].includes(value.provider)
+  const provider = CODING_PROVIDER_IDS.includes(value.provider)
     ? value.provider
     : 'openrouter'
   const runtime = ['html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser'].includes(value.runtime)

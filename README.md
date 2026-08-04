@@ -18,7 +18,7 @@
 Orbit CLI requires Node.js 22 or newer.
 
 ```sh
-git clone https://github.com/the-super-engine/orbit-cli.git
+git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
 npm ci
 npm link
@@ -52,13 +52,14 @@ Prefer a graphical interface? Open the local Web CLI:
 orbit web
 ```
 
-## Bring your own model
+## Choose how models are accessed
 
-Orbit CLI works with your Orbit account or your own provider API key. BYOK providers currently include OpenRouter, Z.AI, DeepSeek, Volcengine Ark, and Replicate for 3D generation.
+Orbit CLI offers two model routes. Sign in with Orbit OAuth to use Orbit Cloud and Orbit billing, or use your own API key for OpenRouter, OpenAI, DeepSeek, Zhipu BigModel (China), Z.AI (Global), Volcengine Ark, Kimi (China), or Kimi (Global). Replicate keys are supported for 3D generation.
 
 ```sh
 orbit providers set openrouter
 orbit providers list
+orbit providers models openrouter
 
 orbit generate \
   --mode byok \
@@ -66,6 +67,8 @@ orbit generate \
   --workspace "$PWD/my-game" \
   --prompt "Build a fast neon racing game"
 ```
+
+OpenRouter models are selected by model ID rather than a hard-coded list; the catalog command shows models that advertise tool support. You can still enter another model ID directly. Regional Zhipu and Kimi services use separate endpoints and separate stored keys.
 
 Provider keys are stored in your operating system's credential vault. For automation, use `--key-stdin` instead of putting a key in shell history.
 
@@ -112,6 +115,6 @@ Publishing is always an explicit step and requires an Orbit login.
 - Run `orbit --help` for the complete command reference.
 - Run `orbit capabilities` to see the features available in your installed version.
 - Read the [security policy](SECURITY.md).
-- Download a version from [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases).
+- Download a version from [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases).
 
 Developed by **SODA GAME**. Licensed under the [MIT License](LICENSE).
