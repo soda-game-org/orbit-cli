@@ -342,7 +342,15 @@ export async function generateReplicateModel3d({
       } }),
     })
     const body = await responseJson(response)
-    if (!response.ok || typeof body?.id !== 'string' || !body.id) {
+    if (!response.ok) {
+      // The provider definitively rejected the request, so a later retry cannot
+      // duplicate a billable prediction. Network/invalid-success ambiguity
+      // intentionally leaves requestPending=true for the host to fail closed.
+      state.requestPending = false
+      await persist?.(state)
+      throw Object.assign(new Error(body?.detail || `Replicate 3D request failed (${response.status})`), { status: response.status })
+    }
+    if (typeof body?.id !== 'string' || !body.id) {
       throw Object.assign(new Error(body?.detail || `Replicate 3D request failed (${response.status})`), { status: response.status })
     }
     state.predictionId = body.id
