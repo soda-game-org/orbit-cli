@@ -6,4 +6,4 @@ It contains fixed provider profiles, request and response conversion, model disc
 
 Successful assistant responses may include `usage` with `promptTokens`, `completionTokens`, `reasoningTokens`, `cachedTokens`, and `totalTokens`. The same normalization is also exported as `normalizeProviderUsage(raw)`. Provider-specific raw usage and cost fields are intentionally omitted so each host can apply its own trusted billing policy.
 
-See the [Orbit CLI repository](https://github.com/the-super-engine/orbit-cli) for the public source and security policy.
+See the [Orbit CLI repository](https://github.com/soda-game-org/orbit-cli) for the public source and security policy.

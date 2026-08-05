@@ -35,6 +35,35 @@ test('rejects secret-like files in dist instead of silently uploading them', asy
   await assert.rejects(new PublishService({}).prepare({ workspace: root }), /Secret-like files/)
 })
 
+test('rejects embedded credentials in ordinary source and dist files without echoing them', async (t) => {
+  const root = await fixture(t)
+  const providerKey = ['sk', 'proj', 'A'.repeat(32)].join('-')
+  await fs.writeFile(path.join(root, 'config.js'), `export const apiKey = "${providerKey}"`)
+  await assert.rejects(new PublishService({}).prepare({ workspace: root }), (error) => {
+    assert.match(error.message, /Secret-like content cannot be published: config\.js/)
+    assert.doesNotMatch(error.message, new RegExp(providerKey))
+    return true
+  })
+
+  await fs.rm(path.join(root, 'config.js'))
+  const githubToken = ['ghp', 'B'.repeat(32)].join('_')
+  await fs.writeFile(path.join(root, 'dist', 'bundle.js'), `window.token = "${githubToken}"`)
+  await assert.rejects(new PublishService({}).prepare({ workspace: root }), (error) => {
+    assert.match(error.message, /Secret-like content cannot be published: bundle\.js/)
+    assert.doesNotMatch(error.message, new RegExp(githubToken))
+    return true
+  })
+})
+
+test('allows environment references and obvious placeholders in published source', async (t) => {
+  const root = await fixture(t)
+  await fs.writeFile(path.join(root, 'config.js'), [
+    'export const apiKey = process.env.PROVIDER_API_KEY',
+    'export const clientSecret = "replace-me-before-deploying"',
+  ].join('\n'))
+  await new PublishService({}).prepare({ workspace: root })
+})
+
 test('rejects symbolic links anywhere in publish input', async (t) => {
   const root = await fixture(t)
   await fs.symlink(path.join(root, 'source.js'), path.join(root, 'linked.js'))

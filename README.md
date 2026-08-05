@@ -18,9 +18,15 @@
 Orbit CLI requires Node.js 22 or newer.
 
 ```sh
-git clone https://github.com/the-super-engine/orbit-cli.git
+npm install --global @soda_game/orbit-cli
+```
+
+To work from source instead:
+
+```sh
+git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
-npm ci
+npm ci --ignore-scripts
 npm link
 ```
 
@@ -51,6 +57,16 @@ Prefer a graphical interface? Open the local Web CLI:
 ```sh
 orbit web
 ```
+
+### Build-command safety
+
+Orbit does not run project code by default. Some generated projects need a local dependency install or build; enable that only after reviewing the workspace:
+
+```sh
+orbit resume <run-id> --allow-shell
+```
+
+The command boundary is intentionally narrow and uses an isolated HOME and npm cache, but the project's own `build` script still runs with your operating-system user's filesystem permissions. Treat `--allow-shell` as permission to execute the generated project, not as a sandbox.
 
 ## Choose how models are accessed
 
@@ -130,6 +146,7 @@ Publishing is always an explicit step and requires an Orbit login.
 - Run `orbit --help` for the complete command reference.
 - Run `orbit capabilities` to see the features available in your installed version.
 - Read the [security policy](SECURITY.md).
-- Download a version from [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases).
+- Review the [release-integrity policy and historical tag notice](RELEASES.md).
+- Browse source tags and release notes on [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases).
 
 Developed by **SODA GAME**. Licensed under the [MIT License](LICENSE).

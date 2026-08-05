@@ -3,10 +3,10 @@ import { constants } from 'node:fs'
 import path from 'node:path'
 import { createGzip } from 'node:zlib'
 import { Readable } from 'node:stream'
+import { scanSecretBytes, secretLikeFileName } from './secret-scan.mjs'
 import { canonicalDirectory, isContained, writeJsonAtomic } from './util.mjs'
 
 const SOURCE_EXCLUDED_DIRECTORIES = new Set(['.git', '.orbit', 'node_modules', 'dist', 'coverage'])
-const SECRET_SUFFIXES = ['.jks', '.key', '.keystore', '.p12', '.pem', '.pfx']
 const MAX_FILES = 5_000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 const MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -16,15 +16,6 @@ function portable(value) {
   if (!normalized || normalized.startsWith('/') || normalized.split('/').some((part) => !part || part === '.' || part === '..')
     || Buffer.byteLength(normalized) > 512 || normalized.includes('\0')) throw new Error(`Non-portable publish path: ${value}`)
   return normalized
-}
-
-function secretFile(name) {
-  const lower = name.toLowerCase()
-  if (lower === '.env' || lower.startsWith('.env.') || lower === '.dev.vars' || lower.startsWith('.dev.vars.')) return true
-  if (lower === 'id_rsa' || lower === 'id_ed25519') return true
-  if (SECRET_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true
-  if (lower.includes('service-account') && lower.endsWith('.json')) return true
-  return false
 }
 
 function excludedSourceDirectory(name, directory) {
@@ -53,7 +44,7 @@ async function collect(root, base, { source }) {
     entries.sort((left, right) => left.name.localeCompare(right.name))
     for (const entry of entries) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name
-      if (secretFile(entry.name)) throw new Error(`Secret-like files cannot be published: ${relative}`)
+      if (secretLikeFileName(entry.name)) throw new Error(`Secret-like files cannot be published: ${relative}`)
       if (source && excludedSourceDirectory(entry.name, entry.isDirectory())) continue
       if (entry.isSymbolicLink()) throw new Error(`Symbolic links cannot be published: ${relative}`)
       const absolute = path.join(directory, entry.name)
@@ -63,7 +54,10 @@ async function collect(root, base, { source }) {
       if (stat.size > MAX_FILE_BYTES) throw new Error(`Publish file is too large: ${relative}`)
       total += stat.size
       if (files.length >= MAX_FILES || total > MAX_TOTAL_BYTES) throw new Error('Publish project exceeds the file or byte limit')
-      files.push({ path: portable(relative), bytes: await readStable(root, absolute, stat), mode: stat.mode & 0o111 ? 0o755 : 0o644 })
+      const bytes = await readStable(root, absolute, stat)
+      const secretKinds = scanSecretBytes(bytes)
+      if (secretKinds.length) throw new Error(`Secret-like content cannot be published: ${relative} (${secretKinds.join(', ')})`)
+      files.push({ path: portable(relative), bytes, mode: stat.mode & 0o111 ? 0o755 : 0o644 })
     }
   }
   await visit(start, '')

@@ -45,6 +45,28 @@ test('validates lifecycle implemented in local JavaScript, not only index HTML',
 test('does not allow npm install lifecycle scripts through the shell tool', async (t) => {
   const { executor } = await fixture(t)
   await assert.rejects(executor.execute(call('shell', { command: 'npm install' })), /allowlist/)
+  await assert.rejects(executor.execute(call('shell', { command: 'npm test' })), /allowlist/)
+  await assert.rejects(executor.execute(call('shell', { command: 'npm run arbitrary' })), /allowlist/)
+})
+
+test('runs the explicit build target with an isolated home and filtered environment', async (t) => {
+  const { workspace, executor } = await fixture(t)
+  const canaryName = 'ORBIT_SHELL_ENV_CANARY'
+  const previous = process.env[canaryName]
+  process.env[canaryName] = 'must-not-reach-child'
+  t.after(() => {
+    if (previous === undefined) delete process.env[canaryName]
+    else process.env[canaryName] = previous
+  })
+  await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify({
+    scripts: {
+      build: `node -e "console.log(JSON.stringify({home:process.env.HOME,canary:process.env.${canaryName}}))"`,
+    },
+  }))
+  const result = JSON.parse(await executor.execute(call('shell', { command: 'npm run build' })))
+  assert.equal(result.exitCode, 0)
+  assert.doesNotMatch(result.output, /must-not-reach-child/)
+  assert.match(result.output, /\.orbit\/shell-home/)
 })
 
 test('offers image generation to explicit Orbit and BYOK game-agent runs and checkpoints tool output', async (t) => {

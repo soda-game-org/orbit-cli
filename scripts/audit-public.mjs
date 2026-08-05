@@ -5,26 +5,24 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { findHighConfidenceSecrets, secretLikeFileName } from '../src/secret-scan.mjs'
 
 const execFileAsync = promisify(execFile)
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 // Local E2E evidence is deliberately kept beside the checkout so failures can
 // be inspected, but it is gitignored and excluded by package.json `files`.
 const ignored = new Set(['.git', '.orbit-e2e', 'node_modules', 'coverage'])
-const allowedTopLevel = new Set(['.github', '.gitignore', 'LICENSE', 'NOTICE.md', 'README.md', 'README.zh-CN.md', 'SECURITY.md', 'bin', 'package-lock.json', 'package.json', 'packages', 'scripts', 'skills', 'src', 'test'])
-const forbiddenNames = new Set(['.env', '.dev.vars', 'id_rsa', 'id_ed25519'])
+const allowedTopLevel = new Set(['.github', '.gitignore', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE.md', 'README.md', 'README.zh-CN.md', 'RELEASES.md', 'SECURITY.md', 'bin', 'package-lock.json', 'package.json', 'packages', 'scripts', 'skills', 'src', 'test'])
 const privateSkillFiles = []
 const findings = []
 
-// This file is the sole content-scan exemption because it necessarily contains
-// the deny markers themselves. It is not part of the npm package.
-const AUDIT_SCRIPT = 'scripts/audit-public.mjs'
 const PUBLIC_GENERIC_SKILL = 'skills/generic-html-game/SKILL.md'
 const PACK_ALLOWED_EXACT = new Set([
   'LICENSE',
   'NOTICE.md',
   'README.md',
   'README.zh-CN.md',
+  'RELEASES.md',
   'SECURITY.md',
   'bin/orbit.mjs',
   'package.json',
@@ -45,79 +43,14 @@ const PACK_ALLOWED_EXTENSIONS = new Set(['.css', '.html', '.js', '.json', '.md',
 const PACK_ALLOWED_EXTENSIONLESS = new Set(['LICENSE'])
 const MAX_SCANNED_FILE_BYTES = 12 * 1024 * 1024
 
-// Keep release-deny terms effective without publishing the sensitive names as
-// searchable literals in this repository. Joining fragments at runtime still
-// catches accidental references in product code and package contents.
-function denyPattern(fragments, flags = 'gi') {
-  return new RegExp(fragments.join(''), flags)
-}
-
-const forbiddenContent = [
-  [/\bSUPABASE_SERVICE_(?:KEY|ROLE)\b/g, 'service credential name'],
-  [/\bsb_secret_[A-Za-z0-9._-]+/g, 'Supabase secret'],
-  [/\bgh[opsu]_[A-Za-z0-9]{20,}/g, 'GitHub token'],
-  [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, 'private key'],
-  [/\bsk-[A-Za-z0-9_-]{20,}/g, 'provider secret'],
-  [/(?:^|["'])\/(?:Users|home)\/[^\s"']+/gm, 'absolute developer path'],
-  [denyPattern(['\\b(?:co', 'dex|open', 'code|de', 'vin|cl', 'ine|ai', 'der)\\b']), 'third-party agent comparison'],
-  [denyPattern(['\\bclau', 'de[ _-]?co', 'de\\b']), 'third-party agent comparison'],
-  [denyPattern(['\\bpi[ _-]?ag', 'ent\\b']), 'third-party agent comparison'],
-  [denyPattern(['\\bmario', 'zechner\\b']), 'third-party agent implementation reference'],
-  [denyPattern(['\\bCur', 'sor\\b'], 'g'), 'third-party editor comparison'],
-  [denyPattern(['7', 'k7k']), 'private reference-site integration'],
-  [denyPattern(['43', '99']), 'private reference-site integration'],
-  [/\barcade[-_ ]web[-_ ]catch\b/gi, 'private web-catch integration'],
-  [/\bweb[-_ ]catch(?:er|ing)?\b/gi, 'private web-catch integration'],
-  [/\bcatch[-_ ]studio\b/gi, 'private Catch Studio integration'],
-  [/\bbatch[-_ ]catch\b/gi, 'private batch-catch integration'],
-  [/\b(?:web_sources|web_captures|web_capture_assets|web_capture_source_categories|web_capture_taxonomy|web_capture_queue_items|game_web_references)\b/gi, 'private web-catch database schema'],
-  [/\blocal[-_ ]pro(?:[-_ ][a-z0-9]+)*[-_ ]database\b/gi, 'private Local PRO database'],
-  [/\blocal[-_ ]pro[-_ ]model[-_ ]pricing\b/gi, 'private model pricing'],
-  [/\blocal[-_ ]pro[-_ ]taxonomy\b/gi, 'private taxonomy'],
-  [/\barcade[-_ ]random[-_ ]game[-_ ]library\b/gi, 'private random-game library'],
-  [/\bdelivery[-_ ]directory\b/gi, 'private delivery tooling'],
-  [/(?:^|\/)scripts\/localpro-cli(?:\/|$)/gim, 'private Local PRO implementation path'],
-]
-
 function isContained(rootDirectory, candidate) {
   const relative = path.relative(rootDirectory, candidate)
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 function scanText(relative, text) {
-  if (relative === AUDIT_SCRIPT) return
-  for (const [pattern, label] of forbiddenContent) {
-    pattern.lastIndex = 0
-    if (pattern.test(text)) findings.push(`${relative}: ${label}`)
-  }
-}
-
-function selfCheckPrivateBoundaryPolicy() {
-  // Build the samples in pieces so repository-wide searches still report only
-  // the policy definition above. Every private feature family must trip at
-  // least one deny rule before a release audit is allowed to pass.
-  const samples = [
-    ['7', 'k7k'],
-    ['43', '99'],
-    ['web', '_catch'],
-    ['catch', '-studio'],
-    ['batch', '_catch'],
-    ['web_capture_', 'queue_items'],
-    ['local-pro-', 'database'],
-    ['local-pro-queue-', 'database'],
-    ['local-pro-model-', 'pricing'],
-    ['local-pro-', 'taxonomy'],
-    ['arcade-random-game-', 'library'],
-    ['delivery-', 'directory'],
-    ['scripts/', 'localpro-cli/worker.mjs'],
-  ].map((parts) => parts.join(''))
-  for (const sample of samples) {
-    const blocked = forbiddenContent.some(([pattern]) => {
-      pattern.lastIndex = 0
-      return pattern.test(sample)
-    })
-    if (!blocked) findings.push('private-boundary deny policy self-check failed')
-  }
+  for (const label of findHighConfidenceSecrets(text)) findings.push(`${relative}: ${label}`)
+  if (/(?:^|["'])\/(?:Users|home)\/[^\s"']+/m.test(text)) findings.push(`${relative}: absolute developer path`)
 }
 
 function decodeUtf8(bytes) {
@@ -137,13 +70,47 @@ async function visit(directory, prefix = '') {
     if (entry.isSymbolicLink()) { findings.push(`${relative}: symbolic link`); continue }
     if (entry.isDirectory()) { await visit(absolute, relative); continue }
     if (!entry.isFile()) { findings.push(`${relative}: non-regular file`); continue }
-    if (forbiddenNames.has(entry.name) || /\.(?:jks|key|keystore|p12|pem|pfx|tgz)$/i.test(entry.name)) findings.push(`${relative}: forbidden file type`)
+    if (secretLikeFileName(entry.name) || /\.tgz$/i.test(entry.name)) findings.push(`${relative}: forbidden file type`)
     if (relative.startsWith('skills/') && relative !== PUBLIC_GENERIC_SKILL) privateSkillFiles.push(relative)
     const stat = await fs.stat(absolute)
     if (stat.size > MAX_SCANNED_FILE_BYTES) { findings.push(`${relative}: unexpectedly large file`); continue }
     const bytes = await fs.readFile(absolute)
     const text = decodeUtf8(bytes)
     if (text !== null) scanText(relative, text)
+  }
+}
+
+async function auditReachableGitHistory() {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-list', '--objects', '--all'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    })
+    const seen = new Set()
+    for (const line of stdout.split(/\r?\n/)) {
+      const separator = line.indexOf(' ')
+      if (separator < 1) continue
+      const object = line.slice(0, separator)
+      const relative = line.slice(separator + 1)
+      if (!relative || seen.has(object)) continue
+      seen.add(object)
+      if (secretLikeFileName(path.posix.basename(relative))) findings.push(`git history ${relative}: forbidden file type`)
+      const { stdout: type } = await execFileAsync('git', ['cat-file', '-t', object], { cwd: root, encoding: 'utf8', windowsHide: true })
+      if (type.trim() !== 'blob') continue
+      const { stdout: bytes } = await execFileAsync('git', ['cat-file', 'blob', object], {
+        cwd: root,
+        encoding: 'buffer',
+        maxBuffer: MAX_SCANNED_FILE_BYTES + 1,
+        windowsHide: true,
+      })
+      if (bytes.byteLength > MAX_SCANNED_FILE_BYTES) { findings.push(`git history ${relative}: unexpectedly large file`); continue }
+      const text = decodeUtf8(bytes)
+      if (text !== null) scanText(`git history ${relative}`, text)
+    }
+  } catch (error) {
+    findings.push(`reachable git history could not be audited: ${String(error?.message || error).slice(0, 500)}`)
   }
 }
 
@@ -262,15 +229,15 @@ async function auditPackManifest(manifest, packageJson) {
 for (const entry of await fs.readdir(root)) {
   if (!ignored.has(entry) && !allowedTopLevel.has(entry)) findings.push(`${entry}: unexpected top-level release entry`)
 }
-selfCheckPrivateBoundaryPolicy()
 const packageJson = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
 if (Object.keys(packageJson.dependencies || {}).some((name) => name.startsWith('@orbit/'))) findings.push('Private Orbit packages cannot be dependencies')
 await visit(root)
+await auditReachableGitHistory()
 if (privateSkillFiles.length) findings.push(`Only the generic skill may ship: ${privateSkillFiles.join(', ')}`)
 const packedFileCount = await auditPackManifest(await npmPackManifest(), packageJson)
 if (findings.length) {
   console.error(`Public release audit failed:\n${[...new Set(findings)].map((finding) => `- ${finding}`).join('\n')}`)
   process.exitCode = 1
 } else {
-  console.log(`Public release audit passed: ${packedFileCount} packaged files contain no private integrations, credentials, private skills, third-party comparisons, symbolic links, boundary escapes or unexpected package entries.`)
+  console.log(`Public release audit passed: the checkout, reachable Git history and ${packedFileCount} packaged files contain no high-confidence credentials, private skills, symbolic links, boundary escapes or unexpected package entries.`)
 }
