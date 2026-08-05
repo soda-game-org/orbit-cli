@@ -6,6 +6,7 @@ import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from 
 import { providerCredentialAccount } from './credentials.mjs'
 import { withRecoveryView } from './recovery-view.mjs'
 import { boundedString, publicError } from './util.mjs'
+import { collectCreateArguments, runWelcomeMenu, welcomeActionArguments } from './welcome.mjs'
 
 const HELP = `Orbit CLI ${VERSION}
 
@@ -149,10 +150,32 @@ async function directImage(app, flags) {
 
 export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const app = dependencies.app || createApplication()
+  const stdin = dependencies.stdin || process.stdin
+  const stdout = dependencies.stdout || process.stdout
   const recovered = await app.store.recoverInterrupted()
   if (recovered.length) console.error(`Recovered ${recovered.length} interrupted local run(s). Use \`orbit resume <run-id>\`.`)
-  const { positionals, flags } = parse(argv)
-  const [command, action, target] = positionals
+  let { positionals, flags } = parse(argv)
+  let [command, action, target] = positionals
+  if (!command && stdin.isTTY && stdout.isTTY) {
+    const selected = await (dependencies.runWelcomeMenu || runWelcomeMenu)({
+      stdin,
+      stdout,
+      cwd: dependencies.cwd || process.cwd(),
+      home: dependencies.home || process.env.HOME,
+      config: await app.config.get(),
+    })
+    if (!selected) return 0
+    argv = selected === 'create'
+      ? await (dependencies.collectCreateArguments || collectCreateArguments)({
+          cwd: dependencies.cwd || process.cwd(),
+          stdin,
+          stdout,
+        })
+      : welcomeActionArguments(selected)
+    if (!argv) return 0
+    ;({ positionals, flags } = parse(argv))
+    ;[command, action, target] = positionals
+  }
   if (command === 'version' || flags.version) { console.log(VERSION); return 0 }
   if (!command || command === 'help' || flags.help) { console.log(HELP); return 0 }
 

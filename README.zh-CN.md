@@ -1,13 +1,13 @@
-<p align="center">
-  <img src="assets/readme/orbit-cli-hero.jpg" alt="一条终端命令生成出一组 Orbit Arcade 小游戏" width="100%" />
-</p>
-
 <h1 align="center">Orbit CLI</h1>
 
-<p align="center"><strong>在终端写下一句话，把它变成可以立即游玩的街机小游戏。</strong></p>
+<p align="center"><strong>一个在本地运行的游戏开发 Agent，把一句描述变成可玩的浏览器小游戏。</strong></p>
 
 <p align="center">
-  一个开源、本地优先的 AI 游戏开发 Agent，用于构建、测试、续跑和发布浏览器游戏。
+  <img src="assets/readme/orbit-cli-hero.jpg" alt="真实的 Orbit CLI 欢迎菜单和五张 Orbit Arcade 游戏封面" width="100%" />
+</p>
+
+<p align="center">
+  开源、本地优先；在终端完成构建、校验、续跑和发布。
 </p>
 
 <p align="center">
@@ -66,6 +66,14 @@ npm link
 ```sh
 orbit doctor
 ```
+
+也可以直接运行无参数的 `orbit`，打开键盘操作的启动菜单：
+
+```sh
+orbit
+```
+
+选择 **Create a game** 输入游戏描述和工作区，也可以直接进入 Web CLI、本地运行记录、账号登录、服务商列表、诊断和完整命令说明。
 
 ### 创建第一个游戏
 
@@ -174,7 +182,7 @@ orbit publish <run-id>
 
 ## 文档
 
-- 运行 `orbit --help` 查看完整命令说明。
+- 运行 `orbit` 打开交互式启动菜单，或运行 `orbit --help` 查看完整命令说明。
 - 运行 `orbit capabilities` 查看当前版本支持的功能。
 - 阅读[安全策略](SECURITY.md)。
 - 阅读[发布完整性策略与历史标签说明](RELEASES.md)。

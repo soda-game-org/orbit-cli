@@ -1,13 +1,13 @@
-<p align="center">
-  <img src="assets/readme/orbit-cli-hero.jpg" alt="A terminal command flowing into a collection of Orbit Arcade game covers" width="100%" />
-</p>
-
 <h1 align="center">Orbit CLI</h1>
 
-<p align="center"><strong>Turn a prompt in your terminal into a playable arcade game.</strong></p>
+<p align="center"><strong>A local game-building agent that turns prompts into playable browser games.</strong></p>
 
 <p align="center">
-  An open-source, local-first AI game-development agent for building, testing, resuming, and publishing browser games.
+  <img src="assets/readme/orbit-cli-hero.jpg" alt="The real Orbit CLI welcome menu beside five Orbit Arcade game covers" width="100%" />
+</p>
+
+<p align="center">
+  Open source and local first. Build, validate, resume, and publish from your terminal.
 </p>
 
 <p align="center">
@@ -66,6 +66,14 @@ Check your setup:
 ```sh
 orbit doctor
 ```
+
+Or run `orbit` with no arguments to open the keyboard-driven launcher:
+
+```sh
+orbit
+```
+
+Choose **Create a game** to enter a prompt and workspace, or jump directly to the Web CLI, local runs, account login, provider list, diagnostics, and command reference.
 
 ### Create your first game
 
@@ -174,7 +182,7 @@ Publishing is always an explicit step and requires an Orbit login.
 
 ## Docs
 
-- Run `orbit --help` for the complete command reference.
+- Run `orbit` for the interactive launcher, or `orbit --help` for the complete command reference.
 - Run `orbit capabilities` to see the features available in your installed version.
 - Read the [security policy](SECURITY.md).
 - Review the [release-integrity policy and historical tag notice](RELEASES.md).
