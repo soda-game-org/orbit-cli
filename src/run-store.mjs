@@ -29,6 +29,7 @@ export class RunStore {
       provider: input.provider || null,
       model: input.model || '',
       runtime: input.runtime || 'html',
+      generateImages: input.generateImages === true,
       generate3d: input.generate3d === true,
       cloudLogs: input.cloudLogs === true,
       createdAt: timestamp,
@@ -111,7 +112,9 @@ export class RunStore {
       if (run.state !== 'running' && run.state !== 'recovering') continue
       if (await this.isActive(run.id)) continue
       const pendingUnsafe = run.mode === 'byok' && Boolean(run.pendingModelCall)
-        || ['shell', 'generate_3d_model'].includes(run.pendingTool?.name)
+        || ['shell', 'generate_image', 'generate_3d_model'].includes(run.pendingTool?.name)
+        || run.kind === 'assetimage' && run.assetImage?.requestPending && !run.assetImage?.output
+        || run.kind === 'asset3d' && run.mode === 'byok' && run.asset3d?.requestPending && !run.asset3d?.predictionId
       run.unsafeResumeRequired = pendingUnsafe
       run.lastError = {
         code: 'LOCAL_PROCESS_INTERRUPTED',

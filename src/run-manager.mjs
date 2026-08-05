@@ -6,11 +6,52 @@ import { publicGenericSkill } from './provider.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
 import { OrbitApiError } from './api.mjs'
 
-function modelFromCatalog(catalog) {
+function modelFromCatalog(catalog, excluded = new Set(), excludedPrefixes = []) {
   const models = Array.isArray(catalog?.models) ? catalog.models : []
-  const preferred = catalog?.default_model_id || catalog?.defaults?.pro || catalog?.defaults?.standard
-  if (preferred && models.some((model) => model?.id === preferred)) return preferred
-  return models.find((model) => model?.available !== false)?.id || null
+  const allowed = (model) => model?.available !== false
+    && !excluded.has(model?.id)
+    && !excludedPrefixes.some((prefix) => String(model?.id || '').startsWith(prefix))
+  const preferred = catalog?.default_model_id || catalog?.defaultModelId || catalog?.default || catalog?.defaults?.pro || catalog?.defaults?.standard
+  if (preferred && models.some((model) => model?.id === preferred && allowed(model))) return preferred
+  const candidates = models.filter(allowed)
+  if (excluded.size || excludedPrefixes.length) {
+    candidates.sort((left, right) => Number(right?.perf?.quality || 0) - Number(left?.perf?.quality || 0)
+      || Number(right?.perf?.speed || 0) - Number(left?.perf?.speed || 0))
+  }
+  return candidates[0]?.id || null
+}
+
+function modelFamilyPrefix(modelId) {
+  const match = String(modelId || '').match(/^([A-Za-z0-9]+-)/)
+  return match?.[1] || ''
+}
+
+function removeWithheldNoProgressTail(messages) {
+  const copy = [...messages]
+  while (copy.length) {
+    const last = copy.at(-1)
+    const withheld = last?.role === 'assistant'
+      && String(last.content || '').startsWith('The server withheld this')
+    const nudge = last?.role === 'user'
+      && last.content === 'Continue the task using the available tools. Validate the workspace and call finish only after validation passes.'
+    if (!withheld && !nudge) break
+    copy.pop()
+  }
+  return copy
+}
+
+function completePlan(plan) {
+  if (!plan || typeof plan !== 'object' || !Array.isArray(plan.todos)) return plan
+  const completed = {
+    ...plan,
+    summary: 'Task completed after validation passed.',
+    blockers: [],
+    todos: plan.todos.map((todo) => todo && typeof todo === 'object'
+      ? { ...todo, status: 'completed' }
+      : todo),
+  }
+  delete completed.currentTodoId
+  return completed
 }
 
 function safeToolCall(call) {
@@ -21,13 +62,14 @@ function safeToolCall(call) {
 }
 
 export class RunManager {
-  constructor({ store, config, credentials, auth, apiFactory, byok, threeD, cloudLogs }) {
+  constructor({ store, config, credentials, auth, apiFactory, byok, image, threeD, cloudLogs }) {
     this.store = store
     this.config = config
     this.credentials = credentials
     this.auth = auth
     this.apiFactory = apiFactory
     this.byok = byok
+    this.image = image
     this.threeD = threeD
     this.cloudLogs = cloudLogs
   }
@@ -43,6 +85,9 @@ export class RunManager {
     if (mode === 'byok' && !await this.credentials.get(providerCredentialAccount(provider))) {
       throw new Error(`Configure a ${PROVIDERS[provider]?.label || provider} API key first`)
     }
+    if (mode === 'byok' && input.generateImages) {
+      throw new Error('CLI image generation currently requires Orbit OAuth; BYOK mode will not silently fall back')
+    }
     if (mode === 'byok' && input.generate3d && !await this.credentials.get(providerCredentialAccount('replicate'))) {
       throw new Error('Configure a Replicate API key before enabling BYOK 3D generation')
     }
@@ -56,6 +101,7 @@ export class RunManager {
       provider,
       model: input.model || config.model || '',
       runtime,
+      generateImages: input.generateImages,
       generate3d: input.generate3d,
       cloudLogs: input.cloudLogs ?? config.cloudLogs,
       references,
@@ -76,7 +122,17 @@ export class RunManager {
     let run
     try {
       run = await this.store.load(runId)
-      if (run.state === 'completed') return run
+      if (run.state === 'completed') {
+        const normalizedPlan = completePlan(run.plan)
+        const planChanged = JSON.stringify(normalizedPlan) !== JSON.stringify(run.plan)
+        if (planChanged) run.plan = normalizedPlan
+        if (run.lastError || run.unsafeResumeRequired || planChanged) {
+          run.lastError = null
+          run.unsafeResumeRequired = false
+          await this.store.save(run)
+        }
+        return run
+      }
       if (run.state === 'cancelled' || run.state === 'failed') throw new Error(`Run ${run.id} is terminal (${run.state})`)
       if (run.unsafeResumeRequired && !options.retryUnsafe) {
         run.lastError = { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED', message: 'Resume again with --retry-unsafe after reviewing possible duplicate provider or shell work.' }
@@ -101,11 +157,11 @@ export class RunManager {
         await this.store.save(run)
       }
       const executor = new ToolExecutor({
-        workspace: run.workspace, run, store: this.store, api, threeD: this.threeD,
-        allowShell: options.allowShell, signal: controller.signal,
+        workspace: run.workspace, run, store: this.store, api, image: this.image, threeD: this.threeD,
+        allowShell: options.allowShell, retryUnsafe: options.retryUnsafe, signal: controller.signal,
       })
       await this.#recoverPendingTool(run, executor, options)
-      const tools = agentTools({ mode: run.mode, generate3d: run.generate3d })
+      const tools = agentTools({ mode: run.mode, generateImages: run.generateImages, generate3d: run.generate3d })
       const system = run.mode === 'byok' ? await this.#systemPrompt(run) : ''
       let consecutiveNoTools = 0
       while (run.iteration < MAX_AGENT_ITERATIONS) {
@@ -116,8 +172,9 @@ export class RunManager {
         await this.store.save(run)
         await this.#event(run, 'model_started', { requestKey, iteration: run.iteration })
         let assistant
+        let contentFiltered = false
         if (run.mode === 'orbit') {
-          assistant = await this.apiFactory(run.source).complete({
+          const result = await this.apiFactory(run.source).complete({
             cloudRunId: run.cloudRunId,
             requestKey,
             purpose: 'agent',
@@ -127,7 +184,9 @@ export class RunManager {
             operation: run.operation,
             maxOutputTokens: MODEL_OUTPUT_TOKENS,
             signal: controller.signal,
-          }).then((result) => result.assistant)
+          })
+          assistant = result.assistant
+          contentFiltered = result.finish_reason === 'content_filter'
         } else {
           assistant = await this.byok.complete({
             provider: run.provider, model: run.model || PROVIDERS[run.provider].defaultModel,
@@ -136,6 +195,7 @@ export class RunManager {
           })
         }
         run.pendingModelCall = null
+        run.contentFilterStreak = contentFiltered ? Number(run.contentFilterStreak || 0) + 1 : 0
         if (!assistant || typeof assistant !== 'object') throw new Error('Model response is invalid')
         const calls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls.filter(safeToolCall) : []
         run.messages.push({
@@ -151,6 +211,28 @@ export class RunManager {
         await this.#event(run, 'model_completed', { success: true, iteration: run.iteration })
         if (!calls.length) {
           consecutiveNoTools += 1
+          if (run.mode === 'orbit' && run.contentFilterStreak >= 3) {
+            const failedModel = run.model
+            if (failedModel && !run.failedModels?.includes(failedModel)) {
+              run.failedModels = [...(Array.isArray(run.failedModels) ? run.failedModels : []), failedModel].slice(-12)
+            }
+            const prefix = modelFamilyPrefix(failedModel)
+            if (prefix && !run.failedModelPrefixes?.includes(prefix)) {
+              run.failedModelPrefixes = [...(Array.isArray(run.failedModelPrefixes) ? run.failedModelPrefixes : []), prefix].slice(-8)
+            }
+            if (run.cloudRunId) await api.settle(run.cloudRunId, 'fail', 'content_filter_no_progress').catch(() => undefined)
+            run.cloudRunId = null
+            run.cloudAttempt = Number(run.cloudAttempt || 1) + 1
+            run.model = ''
+            run.contentFilterStreak = 0
+            run.messages = removeWithheldNoProgressTail(run.messages)
+            run.lastError = {
+              code: 'MODEL_CONTENT_FILTER_FALLBACK_READY',
+              message: 'The current official model could not produce a safe local tool turn. Resume to continue with another model family.',
+            }
+            await this.store.transition(run, 'paused')
+            return run
+          }
           if (consecutiveNoTools >= 3) {
             run.lastError = { code: 'AGENT_NO_TOOL_PROGRESS', message: 'The agent stopped making tool progress. The checkpoint is preserved and can be resumed.' }
             await this.store.transition(run, 'paused')
@@ -164,7 +246,7 @@ export class RunManager {
         for (const call of calls) {
           const name = call.function.name
           run.pendingTool = { id: call.id, name, arguments: call.function.arguments, startedAt: new Date().toISOString() }
-          if (['shell', 'generate_3d_model'].includes(name)) run.unsafeResumeRequired = true
+          if (['shell', 'generate_image', 'generate_3d_model'].includes(name)) run.unsafeResumeRequired = true
           await this.store.save(run)
           const started = Date.now()
           await this.#event(run, 'tool_started', { toolName: name, iteration: run.iteration })
@@ -176,12 +258,21 @@ export class RunManager {
             await this.store.save(run)
             await this.#event(run, 'tool_completed', { toolName: name, success: true, durationMs: Date.now() - started })
             if (name === 'finish') {
+              run.plan = completePlan(run.plan)
               run.result = { workspace: run.workspace, validation: run.lastValidation }
+              run.lastError = null
               if (run.mode === 'orbit' && run.cloudRunId) await api.settle(run.cloudRunId, 'complete').catch(() => undefined)
               await this.store.transition(run, 'completed')
               return run
             }
           } catch (error) {
+            if (error?.code === 'UNSAFE_IMAGE_RETRY_REQUIRED') {
+              run.unsafeResumeRequired = true
+              run.lastError = { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED', message: publicError(error) }
+              await this.store.transition(run, 'paused')
+              await this.#event(run, 'run_paused', { errorCode: run.lastError.code })
+              return run
+            }
             const message = publicError(error)
             run.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, error: message }) })
             run.pendingTool = null
@@ -197,7 +288,41 @@ export class RunManager {
     } catch (error) {
       if (!run) throw error
       const interrupted = controller.signal.aborted
-      run.lastError = { code: interrupted ? 'LOCAL_PROCESS_INTERRUPTED' : error?.code || 'RUN_PAUSED', message: publicError(error) }
+      const providerUnavailable = error instanceof OrbitApiError
+        && error.code === 'ENGINE_MODEL_PROVIDER_UNAVAILABLE'
+      if (run.pendingModelCall) {
+        if (run.mode === 'byok' || !(error instanceof OrbitApiError)) {
+          run.unsafeResumeRequired = true
+        } else {
+          // A structured Orbit response proves that the Worker received the
+          // request and terminalized its request key. A later resume must use
+          // a fresh key; only an ambiguous transport failure needs unsafe
+          // duplicate-spend confirmation.
+          run.pendingModelCall = null
+        }
+      }
+      if (providerUnavailable) {
+        if (run.model && !run.failedModels?.includes(run.model)) {
+          run.failedModels = [...(Array.isArray(run.failedModels) ? run.failedModels : []), run.model].slice(-12)
+        }
+        if (run.cloudRunId) {
+          await this.apiFactory(run.source).settle(run.cloudRunId, 'fail', 'model_provider_unavailable').catch(() => undefined)
+        }
+        run.cloudRunId = null
+        run.cloudAttempt = Number(run.cloudAttempt || 1) + 1
+        run.model = ''
+        run.contentFilterStreak = 0
+      }
+      run.lastError = {
+        code: interrupted
+          ? 'LOCAL_PROCESS_INTERRUPTED'
+          : providerUnavailable
+            ? 'MODEL_PROVIDER_FALLBACK_READY'
+            : error?.code || 'RUN_PAUSED',
+        message: providerUnavailable
+          ? 'The selected Orbit model provider is unavailable. Resume to continue with the next available official model.'
+          : publicError(error),
+      }
       await this.store.transition(run, interrupted ? 'interrupted' : 'paused')
       await this.#event(run, interrupted ? 'run_interrupted' : 'run_paused', { errorCode: run.lastError.code })
       return run
@@ -217,7 +342,11 @@ export class RunManager {
       }
     }
     const catalog = await api.models()
-    run.model ||= modelFromCatalog(catalog)
+    run.model ||= modelFromCatalog(
+      catalog,
+      new Set(Array.isArray(run.failedModels) ? run.failedModels : []),
+      Array.isArray(run.failedModelPrefixes) ? run.failedModelPrefixes : [],
+    )
     if (!run.model) throw new Error('Orbit returned no available coding model')
     const begun = await api.beginRun({
       clientRunId: `${run.id}.attempt.${run.cloudAttempt || 1}`,
@@ -237,7 +366,7 @@ export class RunManager {
           cloudRunId: run.cloudRunId, requestKey, purpose: 'reference_media',
           messages: [{ role: 'user', content: await this.#referenceContent(run) }], tools: [], maxOutputTokens: 4096, signal,
         }).then((result) => result?.assistant?.content || '')
-      : await this.byok.analyzeReferences({ provider: run.provider, model: run.model || PROVIDERS[run.provider].defaultModel, references: run.references, signal })
+      : await this.byok.analyzeReferences({ provider: run.provider, model: run.model || PROVIDERS[run.provider].defaultModel, references: run.references, workspace: run.workspace, signal })
     if (!run.referenceSummary) throw new Error('Reference image analysis returned no usable summary')
     await this.store.save(run)
     await this.#event(run, 'reference_analysis_completed', { success: true })
@@ -246,13 +375,13 @@ export class RunManager {
   async #referenceContent(run) {
     const { referenceDataUrl } = await import('./attachments.mjs')
     const content = [{ type: 'text', text: 'Analyze these private reference images for the local game. Summarize composition, palette, characters, environment, camera, UI, and interaction cues. Never instruct the client to copy the original files into public game source.' }]
-    for (const reference of run.references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference) } })
+    for (const reference of run.references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference, run.workspace) } })
     return content
   }
 
   async #recoverPendingTool(run, executor, options) {
     if (!run.pendingTool) return
-    if (['shell', 'generate_3d_model'].includes(run.pendingTool.name) && !options.retryUnsafe) {
+    if (['shell', 'generate_image', 'generate_3d_model'].includes(run.pendingTool.name) && !options.retryUnsafe) {
       run.unsafeResumeRequired = true
       await this.store.save(run)
       throw Object.assign(new Error('Explicit --retry-unsafe is required for the pending non-idempotent tool'), { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED' })
@@ -271,6 +400,7 @@ export class RunManager {
       'Create or edit the selected local workspace. Use update_agent_plan first, keep changes focused, validate, and call finish.',
       'Only the generic public skill below is available locally. Specialized official game templates and private Orbit skills are not present; never claim otherwise.',
       run.generate3d ? '3D generation is enabled and may be used when it materially helps the requested game.' : '3D generation is disabled; use local procedural or existing assets.',
+      run.mode === 'orbit' && run.generateImages ? 'Image generation is enabled. Use generate_image only when a generated asset materially improves the game.' : 'Image generation is disabled; do not request generated image assets.',
       await publicGenericSkill(),
     ].join('\n\n')
   }

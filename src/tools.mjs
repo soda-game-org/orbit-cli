@@ -40,8 +40,18 @@ const BYOK_3D_TOOL = tool('generate_3d_model', 'Generate one original GLB model 
   properties: { prompt: { type: 'string', minLength: 8, maxLength: 8000 }, output_path: { type: 'string' }, face_count: { type: 'integer' }, enable_pbr: { type: 'boolean' } },
 })
 
-export function agentTools({ mode, generate3d }) {
+const OFFICIAL_IMAGE_TOOL = tool('generate_image', 'Generate one original image through the authenticated Orbit Worker when image generation was explicitly enabled. Within a run, output_path is immutable and repeated calls reuse the verified generated asset.', {
+  type: 'object', additionalProperties: false, required: ['prompt', 'output_path'],
+  properties: {
+    prompt: { type: 'string', minLength: 8, maxLength: 8000 },
+    output_path: { type: 'string', description: 'Safe workspace-relative .png path.' },
+    aspect_ratio: { type: 'string', enum: ['1:1', '9:16', '16:9'] },
+  },
+})
+
+export function agentTools({ mode, generateImages = false, generate3d }) {
   const tools = [...BASE_TOOLS]
+  if (mode === 'orbit' && generateImages) tools.splice(tools.length - 3, 0, OFFICIAL_IMAGE_TOOL)
   if (generate3d) tools.splice(tools.length - 3, 0, mode === 'orbit' ? OFFICIAL_3D_TOOL : BYOK_3D_TOOL)
   return tools
 }
@@ -84,6 +94,29 @@ async function resolveForWrite(root, value) {
   const existing = await fs.lstat(absolute).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
   if (existing && (!existing.isFile() || existing.isSymbolicLink() || await fs.realpath(absolute) !== absolute)) throw new Error('Tool destination is unsafe')
   return { relative, absolute }
+}
+
+async function verifiedGeneratedImage(root, output, expectedRelative) {
+  if (!output || typeof output !== 'object'
+    || output.relativePath !== expectedRelative
+    || output.contentType !== 'image/png'
+    || typeof output.sha256 !== 'string') return null
+  const resolved = await resolveForRead(root, output.relativePath).catch(() => null)
+  if (!resolved || resolved.stat.size !== Number(output.bytes)) return null
+  const bytes = await fs.readFile(resolved.absolute)
+  if (bytes.byteLength < 8
+    || !bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    || sha256(bytes) !== output.sha256) return null
+  return { ...output, path: resolved.absolute, relativePath: resolved.relative }
+}
+
+async function reusableGeneratedImage(run, root, expectedRelative) {
+  const entries = Object.entries(run.assetImages || {}).reverse()
+  for (const [callId, state] of entries) {
+    const output = await verifiedGeneratedImage(root, state?.output, expectedRelative)
+    if (output) return { callId, output }
+  }
+  return null
 }
 
 async function atomicWrite(root, value, content) {
@@ -198,13 +231,15 @@ async function validateProject(root, allowShell) {
 }
 
 export class ToolExecutor {
-  constructor({ workspace, run, store, api, threeD, allowShell = false, signal }) {
+  constructor({ workspace, run, store, api, image, threeD, allowShell = false, retryUnsafe = false, signal }) {
     this.workspace = workspace
     this.run = run
     this.store = store
     this.api = api
+    this.image = image
     this.threeD = threeD
     this.allowShell = allowShell
+    this.retryUnsafe = retryUnsafe
     this.signal = signal
   }
 
@@ -256,7 +291,7 @@ export class ToolExecutor {
       for (const [file, content] of working) results.push(await atomicWrite(root, file, content))
       return JSON.stringify({ ok: true, files: results })
     }
-    if (name === 'list_files') return (await listFiles(root)).join('\n').slice(0, MAX_TOOL_OUTPUT_CHARS)
+    if (name === 'list_files') return ((await listFiles(root)).join('\n') || 'No files').slice(0, MAX_TOOL_OUTPUT_CHARS)
     if (name === 'grep_files') {
       const pattern = String(args.pattern || '')
       if (!pattern || pattern.length > 300) throw new Error('grep pattern is invalid')
@@ -290,6 +325,39 @@ export class ToolExecutor {
     if (name === 'finish') {
       if (!this.run.lastValidation?.ok) throw new Error('finish requires a passing validate_project result')
       return JSON.stringify({ ok: true, finished: true, validation: this.run.lastValidation })
+    }
+    if (name === 'generate_image') {
+      if (this.run.mode !== 'orbit' || !this.run.generateImages || !this.api) throw new Error('Official image generation was not enabled for this run')
+      const outputPath = relativePath(args.output_path)
+      this.run.assetImages ||= {}
+      this.run.assetImages[call.id] ||= {}
+      const reusable = await reusableGeneratedImage(this.run, root, outputPath)
+      if (reusable) {
+        this.run.assetImages[call.id] = {
+          ...this.run.assetImages[call.id],
+          outputPath,
+          output: reusable.output,
+          reusedFromCallId: reusable.callId,
+        }
+        await this.store.save(this.run)
+        return JSON.stringify({ ...reusable.output, reused: true }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      }
+      this.run.assetImages[call.id].outputPath = outputPath
+      await this.store.save(this.run)
+      const result = await this.image.generate({
+        api: this.api,
+        workspace: root,
+        prompt: args.prompt,
+        output: outputPath,
+        aspectRatio: args.aspect_ratio || '1:1',
+        state: this.run.assetImages[call.id],
+        retryUnsafe: this.retryUnsafe,
+        signal: this.signal,
+        clientRunId: `${this.run.id}.image.${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 80)}`,
+        requestKey: `image_${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120)}`,
+        persist: async () => this.store.save(this.run),
+      })
+      return JSON.stringify(result).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'generate_3d_model') {
       if (!this.run.generate3d) throw new Error('3D generation was not enabled for this run')

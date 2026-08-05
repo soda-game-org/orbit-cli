@@ -7,12 +7,12 @@
   "author": "SODA GAME",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soda-game-org/orbit-cli.git"
+    "url": "git+https://github.com/the-super-engine/orbit-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/soda-game-org/orbit-cli/issues"
+    "url": "https://github.com/the-super-engine/orbit-cli/issues"
   },
-  "homepage": "https://github.com/soda-game-org/orbit-cli#readme",
+  "homepage": "https://github.com/the-super-engine/orbit-cli#readme",
   "keywords": [
     "orbit",
     "arcade",

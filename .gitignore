@@ -3,6 +3,7 @@ coverage/
 .DS_Store
 *.log
 *.tgz
+.orbit-e2e/
 .orbit/
 .env
 .env.*

@@ -71,7 +71,7 @@ export class ByokProvider {
     })
   }
 
-  async analyzeReferences({ provider, model, references, signal }) {
+  async analyzeReferences({ provider, model, references, workspace, signal }) {
     const capability = await this.capability(provider)
     if (!capability.vision) {
       const error = new Error(`${PROVIDERS[provider].label} is not declared as a vision-capable CLI provider`)
@@ -82,7 +82,7 @@ export class ByokProvider {
       type: 'text',
       text: 'Analyze these private reference images for game implementation. Summarize composition, palette, characters, environment, camera, UI, and interaction cues. Do not claim the files will be copied into the game.',
     }]
-    for (const reference of references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference) } })
+    for (const reference of references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference, workspace) } })
     const result = await this.complete({ provider, model, messages: [{ role: 'user', content }], tools: [], maxOutputTokens: 4096, signal })
     return result.content
   }
@@ -98,12 +98,12 @@ export class OrbitProvider {
     return assistant
   }
 
-  async analyzeReferences({ cloudRunId, requestKey, references, signal }) {
+  async analyzeReferences({ cloudRunId, requestKey, references, workspace, signal }) {
     const content = [{
       type: 'text',
       text: 'Analyze these private reference images for game implementation. Summarize composition, palette, characters, environment, camera, UI, and interaction cues. The original files stay private and must not be copied into game source.',
     }]
-    for (const reference of references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference) } })
+    for (const reference of references) content.push({ type: 'image_url', image_url: { url: await referenceDataUrl(reference, workspace) } })
     const result = await this.api.complete({
       cloudRunId,
       requestKey,

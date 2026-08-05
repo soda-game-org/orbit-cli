@@ -82,6 +82,75 @@ function outputLimit(value, maximum = DEFAULT_MODEL_OUTPUT_TOKENS) {
   return Math.min(maximum, Math.max(16, Number(value) || maximum))
 }
 
+function usageObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+}
+
+function usageNumber(source, keys) {
+  if (!source) return { found: false, value: 0 }
+  let found = false
+  for (const key of keys) {
+    if (!Object.hasOwn(source, key)) continue
+    found = true
+    const raw = source[key]
+    const number = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && raw.trim()
+        ? Number(raw)
+        : Number.NaN
+    if (Number.isFinite(number) && number >= 0) {
+      return { found: true, value: Math.min(Number.MAX_SAFE_INTEGER, Math.floor(number)) }
+    }
+  }
+  return { found, value: 0 }
+}
+
+/**
+ * Normalize token counts emitted by OpenAI-compatible Chat Completions and
+ * Responses APIs. Pricing, cost estimates and the provider's raw usage object
+ * deliberately remain host concerns and are never returned from this helper.
+ */
+export function normalizeProviderUsage(raw) {
+  const usage = usageObject(raw)
+  if (!usage) return null
+  const promptDetails = usageObject(usage.promptTokensDetails)
+    || usageObject(usage.prompt_tokens_details)
+    || usageObject(usage.input_tokens_details)
+  const completionDetails = usageObject(usage.completionTokensDetails)
+    || usageObject(usage.completion_tokens_details)
+    || usageObject(usage.output_tokens_details)
+
+  const prompt = usageNumber(usage, ['promptTokens', 'prompt_tokens', 'inputTokens', 'input_tokens'])
+  const completion = usageNumber(usage, ['completionTokens', 'completion_tokens', 'outputTokens', 'output_tokens'])
+  const reasoningDetail = usageNumber(completionDetails, ['reasoningTokens', 'reasoning_tokens'])
+  const reasoningTopLevel = usageNumber(usage, ['reasoningTokens', 'reasoning_tokens'])
+  const cachedDetail = usageNumber(promptDetails, ['cachedTokens', 'cached_tokens', 'cacheReadTokens', 'cache_read_tokens'])
+  const cachedTopLevel = usageNumber(usage, [
+    'cachedTokens', 'cached_tokens', 'cacheReadTokens', 'cache_read_tokens',
+    'promptCacheHitTokens', 'prompt_cache_hit_tokens',
+  ])
+  const cacheMiss = usageNumber(usage, ['promptCacheMissTokens', 'prompt_cache_miss_tokens'])
+  const total = usageNumber(usage, ['totalTokens', 'total_tokens'])
+  const recognized = prompt.found || completion.found || reasoningDetail.found || reasoningTopLevel.found
+    || cachedDetail.found || cachedTopLevel.found || cacheMiss.found || total.found
+  if (!recognized) return null
+
+  const cachedTokens = cachedDetail.found ? cachedDetail.value : cachedTopLevel.value
+  const promptTokens = prompt.found
+    ? prompt.value
+    : Math.min(Number.MAX_SAFE_INTEGER, cachedTopLevel.value + cacheMiss.value)
+  const completionTokens = completion.value
+  return {
+    promptTokens,
+    completionTokens,
+    reasoningTokens: reasoningDetail.found ? reasoningDetail.value : reasoningTopLevel.value,
+    cachedTokens,
+    totalTokens: total.found
+      ? total.value
+      : Math.min(Number.MAX_SAFE_INTEGER, promptTokens + completionTokens),
+  }
+}
+
 function responsesContent(content) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -177,11 +246,13 @@ function responseAssistant(json) {
     const detail = json?.incomplete_details?.reason ? ` (${json.incomplete_details.reason})` : ''
     throw new Error(`Provider returned no assistant message${detail}`)
   }
+  const usage = normalizeProviderUsage(json?.usage)
   return {
     role: 'assistant', content: content.join('\n'),
     ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
     ...(reasoning.length ? { reasoning: reasoning.join('\n') } : {}),
     response_items: responseItems,
+    ...(usage ? { usage } : {}),
   }
 }
 
@@ -194,12 +265,14 @@ export function parseProviderAssistant(provider, json) {
   if (!message || (typeof message.content !== 'string' && !Array.isArray(message.tool_calls))) {
     throw new Error('Provider returned no assistant message')
   }
+  const usage = normalizeProviderUsage(json?.usage)
   return {
     role: 'assistant', content: typeof message.content === 'string' ? message.content : '',
     ...(Array.isArray(message.tool_calls) ? { tool_calls: message.tool_calls } : {}),
     ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
     ...(typeof message.reasoning === 'string' ? { reasoning: message.reasoning } : {}),
     ...(Array.isArray(message.reasoning_details) ? { reasoning_details: message.reasoning_details } : {}),
+    ...(usage ? { usage } : {}),
   }
 }
 

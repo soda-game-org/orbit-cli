@@ -3,7 +3,12 @@ import test from 'node:test'
 import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
 import { ByokProvider } from '../src/provider.mjs'
-import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '../packages/orbit-provider-core/index.mjs'
+import {
+  generateReplicateModel3d,
+  normalizeProviderUsage,
+  parseProviderAssistant,
+  validateReplicateDeliveryUrl,
+} from '../packages/orbit-provider-core/index.mjs'
 
 class MemoryCredentials {
   constructor(entries = {}) { this.entries = new Map(Object.entries(entries)) }
@@ -21,6 +26,120 @@ test('provider profiles keep regional services and credentials separate', () => 
   assert.equal(PROVIDERS.openai.protocol, 'responses')
   assert.notEqual(providerCredentialAccount('zhipu-cn'), providerCredentialAccount('zai'))
   assert.notEqual(providerCredentialAccount('kimi-cn'), providerCredentialAccount('kimi-global'))
+})
+
+test('normalizes Chat, Responses and DeepSeek token usage without exposing raw cost data', () => {
+  assert.deepEqual(normalizeProviderUsage({
+    prompt_tokens: 120,
+    completion_tokens: 35,
+    completion_tokens_details: { reasoning_tokens: 9 },
+    prompt_tokens_details: { cached_tokens: 40 },
+    total_tokens: 155,
+    cost: 123.45,
+    raw: { private: true },
+  }), {
+    promptTokens: 120,
+    completionTokens: 35,
+    reasoningTokens: 9,
+    cachedTokens: 40,
+    totalTokens: 155,
+  })
+  assert.deepEqual(normalizeProviderUsage({
+    input_tokens: 80,
+    output_tokens: 20,
+    output_tokens_details: { reasoning_tokens: 6 },
+    input_tokens_details: { cached_tokens: 24 },
+  }), {
+    promptTokens: 80,
+    completionTokens: 20,
+    reasoningTokens: 6,
+    cachedTokens: 24,
+    totalTokens: 100,
+  })
+  assert.deepEqual(normalizeProviderUsage({
+    prompt_cache_hit_tokens: 30,
+    prompt_cache_miss_tokens: 10,
+    completion_tokens: 5,
+    reasoning_tokens: 2,
+  }), {
+    promptTokens: 40,
+    completionTokens: 5,
+    reasoningTokens: 2,
+    cachedTokens: 30,
+    totalTokens: 45,
+  })
+})
+
+test('normalizes invalid provider token counts to bounded non-negative integers', () => {
+  assert.deepEqual(normalizeProviderUsage({
+    prompt_tokens: -10,
+    completion_tokens: Number.NaN,
+    reasoning_tokens: Number.NEGATIVE_INFINITY,
+    cached_tokens: '-3',
+    total_tokens: Number.POSITIVE_INFINITY,
+  }), {
+    promptTokens: 0,
+    completionTokens: 0,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    totalTokens: 0,
+  })
+  assert.deepEqual(normalizeProviderUsage({
+    promptTokens: '12.9', completionTokens: '3.8', totalTokens: String(Number.MAX_VALUE),
+  }), {
+    promptTokens: 12,
+    completionTokens: 3,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    totalTokens: Number.MAX_SAFE_INTEGER,
+  })
+  assert.deepEqual(normalizeProviderUsage({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }), {
+    promptTokens: 0,
+    completionTokens: 0,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    totalTokens: 0,
+  })
+  assert.equal(normalizeProviderUsage(null), null)
+  assert.equal(normalizeProviderUsage([]), null)
+  assert.equal(normalizeProviderUsage({ cost: 0.2 }), null)
+})
+
+test('Chat and Responses assistant parsers attach only normalized usage', () => {
+  const chat = parseProviderAssistant('deepseek', {
+    choices: [{ message: { role: 'assistant', content: 'chat-ok' } }],
+    usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7, cost: 1 },
+  })
+  assert.deepEqual(chat.usage, {
+    promptTokens: 5,
+    completionTokens: 2,
+    reasoningTokens: 0,
+    cachedTokens: 0,
+    totalTokens: 7,
+  })
+  assert.equal(Object.hasOwn(chat.usage, 'cost'), false)
+  assert.equal(Object.hasOwn(chat.usage, 'raw'), false)
+
+  const responses = parseProviderAssistant('openai', {
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'responses-ok' }] }],
+    usage: {
+      input_tokens: 8,
+      output_tokens: 4,
+      input_tokens_details: { cached_tokens: 3 },
+      output_tokens_details: { reasoning_tokens: 2 },
+      total_tokens: 12,
+      cost_usd: 99,
+    },
+  })
+  assert.deepEqual(responses.usage, {
+    promptTokens: 8,
+    completionTokens: 4,
+    reasoningTokens: 2,
+    cachedTokens: 3,
+    totalTokens: 12,
+  })
+  assert.equal(Object.hasOwn(responses.usage, 'costUsd'), false)
+  assert.equal(Object.hasOwn(responses.usage, 'raw'), false)
 })
 
 test('chat-completions profiles send each key only to its fixed regional host', async () => {

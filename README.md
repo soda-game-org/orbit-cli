@@ -18,7 +18,7 @@
 Orbit CLI requires Node.js 22 or newer.
 
 ```sh
-git clone https://github.com/soda-game-org/orbit-cli.git
+git clone https://github.com/the-super-engine/orbit-cli.git
 cd orbit-cli
 npm ci
 npm link
@@ -83,6 +83,17 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
+Generate a PNG image through the authenticated Orbit Worker:
+
+```sh
+orbit image \
+  --workspace "$PWD/my-game" \
+  --prompt "An original neon checkpoint icon on a transparent background" \
+  --output assets/images/checkpoint.png
+```
+
+To let the game-development agent generate image assets when needed, add `--images` to an Orbit OAuth run. Image generation is explicit and currently uses Orbit billing; BYOK coding runs never silently fall back to Orbit billing.
+
 Generate a GLB asset with Orbit or your Replicate account:
 
 ```sh
@@ -115,6 +126,6 @@ Publishing is always an explicit step and requires an Orbit login.
 - Run `orbit --help` for the complete command reference.
 - Run `orbit capabilities` to see the features available in your installed version.
 - Read the [security policy](SECURITY.md).
-- Download a version from [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases).
+- Download a version from [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases).
 
 Developed by **SODA GAME**. Licensed under the [MIT License](LICENSE).

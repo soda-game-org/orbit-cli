@@ -6,6 +6,7 @@ import { sniffImage } from '../attachments.mjs'
 import { appDirectories, canonicalDirectory, collectStream, ensurePrivateDirectory, isContained, openExternal, publicError } from '../util.mjs'
 import { providerCredentialAccount } from '../credentials.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../constants.mjs'
+import { withRecoveryView } from '../recovery-view.mjs'
 
 const HOST = '127.0.0.1'
 const MAX_BODY = 24 * 1024 * 1024
@@ -92,8 +93,8 @@ async function safePreviewFile(root, pathname) {
 }
 
 export class WebCliServer {
-  constructor({ asset3d, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }) {
-    Object.assign(this, { asset3d, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories })
+  constructor({ asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }) {
+    Object.assign(this, { asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories })
     this.token = randomBytes(32).toString('base64url')
     this.csrf = randomBytes(32).toString('base64url')
     this.projects = new Map()
@@ -145,7 +146,8 @@ export class WebCliServer {
       const providers = Object.entries(PROVIDERS).map(([id, definition]) => ({
         id, label: definition.label, purpose: definition.purpose, vision: definition.vision, modelDiscovery: Boolean(definition.modelsPath),
       }))
-      return send(response, 200, { config: await this.config.get(), auth: await this.auth.status(), runs: await this.store.list(), providers })
+      const runs = (await this.store.list()).map(withRecoveryView)
+      return send(response, 200, { config: await this.config.get(), auth: await this.auth.status(), runs, providers })
     }
     if (request.method === 'POST' && url.pathname === '/api/auth/login') return send(response, 200, await this.auth.login())
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') { await this.auth.logout(); return send(response, 200, { ok: true }) }
@@ -168,18 +170,27 @@ export class WebCliServer {
         const run = await this.manager.create({
           source: 'cli_gui', prompt: body.prompt, workspace: body.workspace, operation: body.operation,
           mode: body.mode, provider: body.provider, model: body.model, runtime: body.runtime,
-          generate3d: body.generate3d === true, cloudLogs: body.cloudLogs === true,
+          generateImages: body.generateImages === true, generate3d: body.generate3d === true, cloudLogs: body.cloudLogs === true,
           allowShell: body.allowShell === true, referenceImages: upload.paths,
         })
-        return send(response, 200, { run })
+        return send(response, 200, { run: withRecoveryView(run) })
       } finally { await cleanupUploads(upload) }
+    }
+    if (request.method === 'POST' && url.pathname === '/api/assets/image') {
+      const body = await bodyJson(request)
+      const run = await this.assetImage.create({
+        source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
+        output: body.output, aspectRatio: body.aspectRatio, cloudLogs: body.cloudLogs === true,
+      })
+      return send(response, 200, { run: withRecoveryView(run) })
     }
     if (request.method === 'POST' && url.pathname === '/api/assets/3d') {
       const body = await bodyJson(request)
-      return send(response, 200, { run: await this.asset3d.create({
+      const run = await this.asset3d.create({
         source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
         mode: body.mode, output: body.output, cloudLogs: body.cloudLogs === true,
-      }) })
+      })
+      return send(response, 200, { run: withRecoveryView(run) })
     }
     const resume = /^\/api\/runs\/(run_[0-9a-f-]{36})\/resume$/.exec(url.pathname)
     if (request.method === 'POST' && resume) {
@@ -187,13 +198,15 @@ export class WebCliServer {
       const stored = await this.store.load(resume[1])
       const run = stored.kind === 'asset3d'
         ? await this.asset3d.resume(resume[1], { retryUnsafe: body.retryUnsafe === true })
-        : await this.manager.resume(resume[1], { allowShell: body.allowShell === true, retryUnsafe: body.retryUnsafe === true })
-      return send(response, 200, { run })
+        : stored.kind === 'assetimage'
+          ? await this.assetImage.resume(resume[1], { retryUnsafe: body.retryUnsafe === true })
+          : await this.manager.resume(resume[1], { allowShell: body.allowShell === true, retryUnsafe: body.retryUnsafe === true })
+      return send(response, 200, { run: withRecoveryView(run) })
     }
     const preview = /^\/api\/runs\/(run_[0-9a-f-]{36})\/preview$/.exec(url.pathname)
     if (request.method === 'POST' && preview) {
       const run = await this.store.load(preview[1])
-      if (run.kind === 'asset3d') return send(response, 409, { error: 'Standalone 3D runs do not have a game preview' })
+      if (run.kind === 'asset3d' || run.kind === 'assetimage') return send(response, 409, { error: 'Standalone asset runs do not have a game preview' })
       const workspace = await canonicalDirectory(run.workspace)
       const candidate = path.join(workspace, run.lastValidation?.index?.startsWith('dist/') ? 'dist' : '.')
       const candidateStat = await fs.lstat(candidate)

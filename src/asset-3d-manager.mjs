@@ -28,11 +28,22 @@ export class Asset3DManager {
   async resume(runId, { retryUnsafe = false } = {}) {
     const run = await this.store.load(runId)
     if (run.kind !== 'asset3d') throw new Error('The selected run is not a standalone 3D run')
-    if (run.mode === 'byok' && run.asset3d?.requestPending && !run.asset3d?.predictionId && !retryUnsafe) {
+    const ambiguousStart = run.mode === 'byok' && run.asset3d?.requestPending && !run.asset3d?.predictionId
+    const terminalProviderFailure = ['failed', 'canceled', 'cancelled'].includes(run.asset3d?.status)
+    if ((ambiguousStart || terminalProviderFailure) && !retryUnsafe) {
       run.unsafeResumeRequired = true
-      run.lastError = { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED', message: 'The previous process stopped while starting a billable Replicate request. Confirm unsafe retry after checking the provider dashboard.' }
+      run.lastError = {
+        code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED',
+        message: ambiguousStart
+          ? 'The previous process stopped while starting a billable Replicate request. Confirm unsafe retry after checking the provider dashboard.'
+          : 'The provider job ended without an asset. Use --retry-unsafe to explicitly start a new billable 3D request.',
+      }
       await this.store.transition(run, 'paused')
       return run
+    }
+    if ((ambiguousStart || terminalProviderFailure) && retryUnsafe) {
+      run.asset3d = { retryAttempt: Number(run.asset3d?.retryAttempt || 0) + 1 }
+      await this.store.save(run)
     }
     run.unsafeResumeRequired = false
     return this.execute(runId)
@@ -47,19 +58,31 @@ export class Asset3DManager {
     let run
     try {
       run = await this.store.load(runId)
-      if (run.state === 'completed') return run
+      if (run.state === 'completed') {
+        if (run.lastError || run.unsafeResumeRequired) {
+          run.lastError = null
+          run.unsafeResumeRequired = false
+          await this.store.save(run)
+        }
+        return run
+      }
       await this.store.transition(run, run.startedAt ? 'recovering' : 'running')
       await this.#event(run, 'asset_3d_started')
       const service = run.mode === 'orbit'
         ? new ThreeDService({ api: this.apiFactory(run.source), credentials: this.credentials })
         : this.threeD
+      const retryAttempt = Number(run.asset3d?.retryAttempt || 0)
       const output = await service.generate({
         mode: run.mode, workspace: run.workspace, prompt: run.prompt, output: run.assetOutput,
-        state: run.asset3d, signal: controller.signal, clientRunId: `${run.id}.asset3d`,
-        requestKey: `asset3d_${run.id}`, persist: async () => this.store.save(run),
+        state: run.asset3d, signal: controller.signal,
+        clientRunId: retryAttempt ? `${run.id}.asset3d.retry.${retryAttempt}` : `${run.id}.asset3d`,
+        requestKey: retryAttempt ? `asset3d_${run.id}_retry_${retryAttempt}` : `asset3d_${run.id}`,
+        persist: async () => this.store.save(run),
         onProgress: async (value) => this.#event(run, 'asset_3d_progress', { state: String(value.status || 'working') }),
       })
       run.result = output
+      run.lastError = null
+      run.unsafeResumeRequired = false
       await this.store.transition(run, 'completed')
       await this.#event(run, 'asset_3d_completed', { success: true })
       return run

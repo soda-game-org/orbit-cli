@@ -1,7 +1,10 @@
 import { API_ORIGIN, ENGINE_AGENT_CONTEXT_SCHEMA, ENGINE_CONTRACT_VERSION, ENGINE_LLM_CONTRACT_VERSION, VERSION } from './constants.mjs'
-import { collectStream, publicError } from './util.mjs'
+import { sniffImage } from './attachments.mjs'
+import { collectStream, publicError, sha256 } from './util.mjs'
 
 const MAX_JSON_RESPONSE = 8 * 1024 * 1024
+const MAX_IMAGE_RESPONSE = 16 * 1024 * 1024
+const OFFICIAL_IMAGE_MODELS = new Set(['google/nano-banana', 'google/imagen-4-fast'])
 
 export class OrbitApiError extends Error {
   constructor(status, code, message, details = null) {
@@ -109,6 +112,58 @@ export class OrbitApi {
 
   artboardModels() {
     return this.request('/api/engine/artboard/models', { method: 'GET' })
+  }
+
+  async generateImage(cloudRunId, input) {
+    const aspectRatio = ['1:1', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : null
+    if (!aspectRatio) throw new TypeError('Image aspect ratio must be 1:1, 9:16, or 16:9')
+    const response = await this.request(`/api/engine/runs/${encodeURIComponent(cloudRunId)}/artboard/images`, {
+      method: 'POST',
+      signal: input.signal,
+      body: JSON.stringify({
+        contract_version: 1,
+        request_key: input.requestKey,
+        prompt: input.prompt,
+        aspect_ratio: aspectRatio,
+      }),
+    }, { raw: true, timeoutMs: 5 * 60_000 })
+    const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(contentType)) throw new Error('Orbit image response has an unsupported content type')
+    const declared = response.headers.get('content-length')
+    if (declared !== null && (!Number.isSafeInteger(Number(declared)) || Number(declared) < 16 || Number(declared) > MAX_IMAGE_RESPONSE)) {
+      throw new Error('Orbit image response declared an invalid size')
+    }
+    const bytes = await collectStream(response.body, MAX_IMAGE_RESPONSE)
+    if (bytes.byteLength < 16 || (declared !== null && Number(declared) !== bytes.byteLength)) throw new Error('Orbit image response was truncated')
+    if (sniffImage(bytes) !== contentType) throw new Error('Orbit image response signature does not match its content type')
+    const actualHash = sha256(bytes)
+    const model = response.headers.get('x-orbit-image-model')
+    const degradedFrom = response.headers.get('x-orbit-image-degraded-from')
+    const expectedHash = response.headers.get('x-orbit-content-sha256')?.toLowerCase()
+    const expectedDimensions = aspectRatio === '1:1' ? [1024, 1024] : aspectRatio === '9:16' ? [576, 1024] : [1024, 576]
+    if (response.headers.get('x-orbit-contract-version') !== '1'
+      || response.headers.get('x-orbit-request-key') !== input.requestKey
+      || !OFFICIAL_IMAGE_MODELS.has(model)
+      || (degradedFrom !== null && (degradedFrom !== 'google/nano-banana' || model === degradedFrom))
+      || response.headers.get('x-orbit-image-aspect-ratio') !== aspectRatio
+      || Number(response.headers.get('x-orbit-image-width')) !== expectedDimensions[0]
+      || Number(response.headers.get('x-orbit-image-height')) !== expectedDimensions[1]
+      || !expectedHash || expectedHash !== actualHash) {
+      throw new Error('Orbit image receipt did not match the downloaded bytes')
+    }
+    return {
+      bytes,
+      contentType,
+      contentSha256: actualHash,
+      model,
+      degraded: degradedFrom !== null,
+      degradedFrom,
+      width: expectedDimensions[0],
+      height: expectedDimensions[1],
+      aspectRatio,
+      costUsd: Number(response.headers.get('x-orbit-cost-usd')) || 0,
+      runCostUsd: Number(response.headers.get('x-orbit-run-cost-usd')) || 0,
+    }
   }
 
   start3dJob(cloudRunId, input) {

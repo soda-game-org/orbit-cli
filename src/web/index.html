@@ -29,6 +29,7 @@
           </div>
           <div class="reference-drop"><label for="references"><span>REFERENCE IMAGES</span><b>Choose PNG, JPEG, or WebP</b><small>8 files · 5 MiB each · 16 MiB total · private analysis context</small></label><input id="references" type="file" multiple accept="image/png,image/jpeg,image/webp"><output id="reference-list">No images selected</output></div>
           <div class="toggles">
+            <label><input id="generateImages" type="checkbox"><span><b>Generate images</b><small>Orbit OAuth Worker only</small></span></label>
             <label><input id="generate3d" type="checkbox"><span><b>Generate 3D models</b><small>Orbit OAuth or a Replicate key</small></span></label>
             <label><input id="cloudLogs" type="checkbox"><span><b>Cloud diagnostics</b><small>Sanitized events marked as CLI GUI</small></span></label>
             <label><input id="allowShell" type="checkbox"><span><b>Allow build commands</b><small>Restricted command allowlist</small></span></label>
@@ -36,13 +37,14 @@
           <button class="launch" type="submit"><span>Start local agent</span><kbd>⌘ ↵</kbd></button>
         </form>
         <section class="keys" aria-labelledby="keys-heading"><div><p>BYOK VAULT</p><h2 id="keys-heading">Provider keys</h2></div><div class="key-row"><select id="key-provider" aria-label="Key provider"></select><input id="api-key" type="password" placeholder="Stored in your OS credential vault" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div></section>
+        <section class="asset-forge" aria-labelledby="image-heading"><div><p>STANDALONE ASSET RUN</p><h2 id="image-heading">Generate an image</h2><span>Uses Orbit OAuth. The paid request is checkpointed before it reaches the Worker.</span></div><form id="image-form"><textarea id="image-prompt" required rows="3" placeholder="A transparent neon checkpoint icon for a low-poly racing game…"></textarea><div class="asset-row"><select id="image-aspect" aria-label="Image aspect ratio"><option value="1:1">1:1</option><option value="9:16">9:16</option><option value="16:9">16:9</option></select><input id="image-output" value="assets/images/generated.png" aria-label="Image output path"><button type="submit">Generate image</button></div></form></section>
         <section class="asset-forge" aria-labelledby="asset-heading"><div><p>STANDALONE ASSET RUN</p><h2 id="asset-heading">Generate a GLB model</h2><span>Uses Orbit OAuth or your Replicate key. The job checkpoint can resume after a crash.</span></div><form id="asset-form"><textarea id="asset-prompt" required rows="3" placeholder="A stylized low-poly spacecraft with clean topology and PBR materials…"></textarea><div class="asset-row"><select id="asset-mode"><option value="orbit">Orbit OAuth</option><option value="byok">Replicate key</option></select><input id="asset-output" value="assets/models/generated.glb" aria-label="3D output path"><button type="submit">Generate GLB</button></div></form></section>
       </section>
       <aside class="run-deck" aria-labelledby="runs-heading">
         <div class="deck-head"><div><p>CHECKPOINT TAPE</p><h2 id="runs-heading">Local runs</h2></div><button id="refresh-runs" class="icon" aria-label="Refresh runs">↻</button></div>
         <div id="status" class="status-line" role="status">Ready</div>
         <div id="runs" class="runs"></div>
-        <div class="preview-frame"><div class="preview-head"><span>ISOLATED PREVIEW</span><span id="preview-state">No build selected</span></div><iframe id="preview" title="Isolated game preview" sandbox="allow-scripts allow-pointer-lock" referrerpolicy="no-referrer"></iframe></div>
+        <div class="preview-frame"><div class="preview-head"><span>ISOLATED PREVIEW</span><span id="preview-state">No build selected</span></div><iframe id="preview" title="Isolated game preview" sandbox="allow-scripts allow-pointer-lock allow-same-origin" referrerpolicy="no-referrer"></iframe></div>
       </aside>
     </main>
   </div>

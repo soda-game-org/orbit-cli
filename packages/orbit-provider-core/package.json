@@ -7,7 +7,7 @@
   "author": "SODA GAME",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soda-game-org/orbit-cli.git",
+    "url": "git+https://github.com/the-super-engine/orbit-cli.git",
     "directory": "packages/orbit-provider-core"
   },
   "types": "./index.d.mts",

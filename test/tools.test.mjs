@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RunStore } from '../src/run-store.mjs'
-import { ToolExecutor } from '../src/tools.mjs'
+import { agentTools, ToolExecutor } from '../src/tools.mjs'
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-tools-'))
@@ -29,6 +29,11 @@ test('blocks empty edits, workspace escapes and symlink writes', async (t) => {
   await assert.rejects(executor.execute(call('write_file', { path: 'linked/file.txt', content: 'x' })), /unsafe directory/)
 })
 
+test('returns a non-empty protocol result for an empty workspace listing', async (t) => {
+  const { executor } = await fixture(t)
+  assert.equal(await executor.execute(call('list_files', {})), 'No files')
+})
+
 test('validates lifecycle implemented in local JavaScript, not only index HTML', async (t) => {
   const { workspace, executor } = await fixture(t)
   await fs.writeFile(path.join(workspace, 'index.html'), '<!doctype html><meta name="viewport" content="width=device-width"><script src="game.js"></script><button>Leaderboard</button>')
@@ -40,4 +45,79 @@ test('validates lifecycle implemented in local JavaScript, not only index HTML',
 test('does not allow npm install lifecycle scripts through the shell tool', async (t) => {
   const { executor } = await fixture(t)
   await assert.rejects(executor.execute(call('shell', { command: 'npm install' })), /allowlist/)
+})
+
+test('offers image generation only to explicit Orbit runs and checkpoints tool output', async (t) => {
+  const orbitTools = agentTools({ mode: 'orbit', generateImages: true, generate3d: false })
+  assert.equal(orbitTools.some((item) => item.function.name === 'generate_image'), true)
+  assert.equal(agentTools({ mode: 'orbit', generateImages: false }).some((item) => item.function.name === 'generate_image'), false)
+  assert.equal(agentTools({ mode: 'byok', generateImages: true }).some((item) => item.function.name === 'generate_image'), false)
+
+  const { workspace, store, run } = await fixture(t)
+  run.mode = 'orbit'
+  run.generateImages = true
+  await store.save(run)
+  let received
+  const executor = new ToolExecutor({
+    workspace, store, run, api: {},
+    image: { generate: async (input) => {
+      received = input
+      input.state.output = { relativePath: input.output }
+      await input.persist()
+      return input.state.output
+    } },
+  })
+  const toolCall = call('generate_image', { prompt: 'An original neon arcade icon', output_path: 'assets/images/icon.png', aspect_ratio: '1:1' })
+  toolCall.id = 'image-call-1'
+  const result = JSON.parse(await executor.execute(toolCall))
+  assert.equal(result.relativePath, 'assets/images/icon.png')
+  assert.equal(received.workspace, await fs.realpath(workspace))
+  assert.equal((await store.load(run.id)).assetImages['image-call-1'].output.relativePath, 'assets/images/icon.png')
+})
+
+test('reuses a verified generated image across different model tool-call ids', async (t) => {
+  const { workspace, store, run } = await fixture(t)
+  run.mode = 'orbit'
+  run.generateImages = true
+  await store.save(run)
+  let generated = 0
+  const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
+  const image = { generate: async (input) => {
+    generated += 1
+    const target = path.join(input.workspace, input.output)
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, png)
+    input.state.output = {
+      path: target,
+      relativePath: input.output,
+      bytes: png.byteLength,
+      sha256: '1b56b50ac4e976f488f128cabdcdffb2fc9331d6974bb9968131a415d14ade24',
+      contentType: 'image/png',
+      width: 1,
+      height: 1,
+      model: 'test',
+      costUsd: 0.24,
+    }
+    await input.persist()
+    return input.state.output
+  } }
+  const executor = new ToolExecutor({ workspace, store, run, api: {}, image })
+  const first = call('generate_image', {
+    prompt: 'First model wording for the target asset',
+    output_path: 'assets/images/target.png',
+    aspect_ratio: '1:1',
+  })
+  first.id = 'image-call-first'
+  await executor.execute(first)
+  const second = call('generate_image', {
+    prompt: 'Different fallback model wording for the same target asset',
+    output_path: 'assets/images/target.png',
+    aspect_ratio: '1:1',
+  })
+  second.id = 'image-call-second'
+  const reused = JSON.parse(await executor.execute(second))
+  assert.equal(generated, 1)
+  assert.equal(reused.reused, true)
+  assert.equal(reused.relativePath, 'assets/images/target.png')
+  assert.equal((await store.load(run.id)).assetImages['image-call-second'].reusedFromCallId, 'image-call-first')
 })

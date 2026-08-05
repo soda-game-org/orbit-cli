@@ -1,6 +1,9 @@
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../packages/orbit-provider-core/index.mjs'
+import { createRequire } from 'node:module'
 
-export const VERSION = '0.1.6'
+const require = createRequire(import.meta.url)
+
+export const VERSION = require('../package.json').version
 export const API_ORIGIN = 'https://api.orbit-spaces.com'
 export const WEB_ORIGIN = 'https://orbit-arcade.com'
 export const SUPABASE_URL = 'https://tidzpggdiaaweoasskqe.supabase.co'

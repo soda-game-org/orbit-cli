@@ -33,6 +33,15 @@ export interface OrbitProviderAssistant {
     type: 'function'
     function: { name: string; arguments: string }
   }>
+  usage?: OrbitProviderUsage
+}
+
+export interface OrbitProviderUsage {
+  promptTokens: number
+  completionTokens: number
+  reasoningTokens: number
+  cachedTokens: number
+  totalTokens: number
 }
 
 export interface OrbitProviderModel {
@@ -73,6 +82,7 @@ export function buildProviderRequest(input: Omit<OrbitProviderCompletionInput, '
   url: string
   body: Record<string, unknown>
 }
+export function normalizeProviderUsage(raw: unknown): OrbitProviderUsage | null
 export function parseProviderAssistant(provider: OrbitCodingProviderId, json: unknown): OrbitProviderAssistant
 export function parseProviderModels(json: unknown): OrbitProviderModel[]
 export function completeWithProvider(input: OrbitProviderCompletionInput): Promise<OrbitProviderAssistant>

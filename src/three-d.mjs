@@ -8,6 +8,13 @@ const MODEL = 'tencent/hunyuan-3d-3.1'
 const MAX_MODEL_BYTES = 64 * 1024 * 1024
 const TERMINAL = new Set(['ready', 'failed', 'cancelled', 'acked'])
 
+function retryableOfficialPollError(error) {
+  const status = Number(error?.status)
+  return status === 408 || status === 425 || status === 429 || status >= 500
+    || ['AbortError', 'TimeoutError'].includes(error?.name)
+    || error instanceof TypeError
+}
+
 async function responseJson(response) {
   const text = Buffer.from(await collectStream(response.body, 1024 * 1024)).toString('utf8')
   try { return text ? JSON.parse(text) : null } catch { return null }
@@ -19,10 +26,15 @@ export function isValidGlb(bytes) {
   return view.getUint32(4, true) === 2 && view.getUint32(8, true) === bytes.byteLength
 }
 
-async function writeGlb(workspace, output, bytes) {
-  if (!isValidGlb(bytes)) throw new Error('3D provider output is not a valid GLB 2.0 file')
+async function prepareGlbTarget(workspace, output) {
   const root = await fs.realpath(workspace)
-  const target = path.resolve(root, output || 'assets/models/generated.glb')
+  const relativeOutput = String(output || 'assets/models/generated.glb').replaceAll('\\', '/')
+  if (!relativeOutput || relativeOutput.startsWith('/') || /^[A-Za-z]:/.test(relativeOutput)
+    || relativeOutput.split('/').some((part) => !part || part === '.' || part === '..')
+    || path.posix.extname(relativeOutput).toLowerCase() !== '.glb') {
+    throw new Error('3D output must be a safe workspace-relative .glb path')
+  }
+  const target = path.resolve(root, relativeOutput)
   if (!isContained(root, target)) throw new Error('3D output path escaped the workspace')
   const relative = path.relative(root, target).split(path.sep)
   let current = root
@@ -32,8 +44,18 @@ async function writeGlb(workspace, output, bytes) {
     if (!before) await fs.mkdir(current, { mode: 0o755 })
     const stat = await fs.lstat(current)
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('3D output directory is unsafe')
-    if (!isContained(root, await fs.realpath(current))) throw new Error('3D output directory escaped the workspace')
+    if (await fs.realpath(current) !== current || !isContained(root, current)) throw new Error('3D output directory escaped the workspace')
   }
+  const existing = await fs.lstat(target).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error))
+  if (existing && (!existing.isFile() || existing.isSymbolicLink() || await fs.realpath(target) !== target)) throw new Error('3D output destination is unsafe')
+  return { root, target }
+}
+
+async function writeGlb(prepared, bytes) {
+  if (!isValidGlb(bytes)) throw new Error('3D provider output is not a valid GLB 2.0 file')
+  const { root, target } = prepared
+  const parent = path.dirname(target)
+  if (await fs.realpath(parent) !== parent || !isContained(root, parent)) throw new Error('3D output directory changed while generating')
   const temporary = `${target}.${process.pid}.tmp`
   await fs.writeFile(temporary, bytes, { mode: 0o644, flag: 'wx' })
   await fs.rename(temporary, target)
@@ -48,11 +70,13 @@ export class ThreeDService {
   }
 
   async generate(input) {
-    return input.mode === 'byok' ? this.#byok(input) : this.#official(input)
+    const prepared = await prepareGlbTarget(input.workspace, input.output)
+    return input.mode === 'byok' ? this.#byok({ ...input, prepared }) : this.#official({ ...input, prepared })
   }
 
   async #official(input) {
     const state = input.state || {}
+    const pollIntervalMs = Math.max(1, Number(input.pollIntervalMs) || 5_000)
     if (!state.cloudRunId) {
       const begun = await this.api.beginRun({
         clientRunId: input.clientRunId || id('asset3d_'),
@@ -76,13 +100,23 @@ export class ThreeDService {
     }
     let job
     while (true) {
-      const envelope = await this.api.get3dJob(state.cloudRunId, state.jobId)
+      let envelope
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          envelope = await this.api.get3dJob(state.cloudRunId, state.jobId)
+          break
+        } catch (error) {
+          if (input.signal?.aborted || attempt >= 3 || !retryableOfficialPollError(error)) throw error
+          await input.onProgress?.({ status: 'poll_retry' })
+          await sleep(pollIntervalMs, input.signal)
+        }
+      }
       job = envelope.job
       state.status = job.status
       await input.persist?.(state)
       await input.onProgress?.(job)
       if (TERMINAL.has(job.status)) break
-      await sleep(5_000, input.signal)
+      await sleep(pollIntervalMs, input.signal)
     }
     if (job.status !== 'ready' && job.status !== 'acked') throw new Error(`Orbit 3D generation ended with ${job.status}: ${job.error_code || 'unknown error'}`)
     if (job.status === 'acked' && state.output) return state.output
@@ -90,7 +124,7 @@ export class ThreeDService {
     const expectedHash = downloaded.response.headers.get('x-orbit-content-sha256')?.toLowerCase()
     const actualHash = sha256(downloaded.bytes)
     if (!expectedHash || expectedHash !== actualHash || job.content_sha256 !== actualHash) throw new Error('Orbit 3D receipt hash did not match downloaded bytes')
-    const output = await writeGlb(input.workspace, input.output, downloaded.bytes)
+    const output = await writeGlb(input.prepared, downloaded.bytes)
     state.output = output
     await input.persist?.(state)
     await this.api.ack3dJob(state.cloudRunId, state.jobId, actualHash)
@@ -118,7 +152,7 @@ export class ThreeDService {
     const response = await this.fetchImpl(url, { redirect: 'error', signal: input.signal })
     if (!response.ok) throw new Error(`Replicate model download failed (${response.status})`)
     const bytes = await collectStream(response.body, MAX_MODEL_BYTES)
-    const output = await writeGlb(input.workspace, input.output, bytes)
+    const output = await writeGlb(input.prepared, bytes)
     state.output = output
     await input.persist?.(state)
     return output

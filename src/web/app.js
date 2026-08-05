@@ -47,16 +47,21 @@ function providerOptions() {
 
 function runView() {
   $('runs').replaceChildren(...state.runs.map((run) => {
+    const recoveryDisposition = run.recoveryDisposition || (run.unsafeResumeRequired
+      ? 'confirmation_required'
+      : ['queued', 'paused', 'interrupted'].includes(run.state) ? 'available' : null)
     const item = document.createElement('article'); item.className = 'run'
     const head = document.createElement('div'); head.className = 'run-head'
-    const title = document.createElement('b'); title.textContent = `${run.kind === 'asset3d' ? '3D · ' : ''}${run.prompt?.slice(0, 62) || 'Untitled run'}`
+    const title = document.createElement('b'); title.textContent = `${run.kind === 'asset3d' ? '3D · ' : run.kind === 'assetimage' ? 'IMAGE · ' : ''}${run.prompt?.slice(0, 62) || 'Untitled run'}`
     const badge = document.createElement('span'); badge.className = `state ${run.state}`; badge.textContent = run.state
     head.append(title, badge)
-    const meta = document.createElement('code'); meta.textContent = `${run.id} · ${run.mode} · ${run.runtime}`
+    const recoveryMeta = [run.failureCategory, recoveryDisposition].filter((value) => value && value !== 'none').join(' · ')
+    const meta = document.createElement('code'); meta.textContent = `${run.id} · ${run.mode} · ${run.runtime}${recoveryMeta ? ` · ${recoveryMeta}` : ''}`
     const detail = document.createElement('p'); detail.textContent = run.lastError?.message || run.result?.workspace || run.workspace
     const actions = document.createElement('div'); actions.className = 'run-actions'
-    if (['paused', 'interrupted'].includes(run.state)) actions.append(action('Resume', () => resume(run.id, false)), ...(run.unsafeResumeRequired ? [action('Retry unsafe step', () => resume(run.id, true))] : []))
-    if (run.state === 'completed' && run.kind !== 'asset3d') {
+    if (recoveryDisposition === 'available') actions.append(action('Resume', () => resume(run.id, false)))
+    if (recoveryDisposition === 'confirmation_required') actions.append(action('Retry unsafe step', () => resume(run.id, true)))
+    if (run.state === 'completed' && !['asset3d', 'assetimage'].includes(run.kind)) {
       actions.append(action('Preview', () => preview(run.id)))
       actions.append(action('Publish', () => { publishRunId = run.id; $('publish-dialog').showModal() }))
     }
@@ -100,6 +105,7 @@ $('browse-models').addEventListener('click', async () => {
 })
 $('auth-button').addEventListener('click', async () => { try { status(state.auth.signedIn ? 'Signing out…' : 'Complete sign-in in your browser…'); if (state.auth.signedIn) await api('/api/auth/logout', { method: 'POST', body: '{}' }); else await api('/api/auth/login', { method: 'POST', body: '{}' }); await refresh(); status('Session updated') } catch (error) { status(error.message, true) } })
 $('save-key').addEventListener('click', async () => { try { status('Saving key to the OS credential vault…'); await api('/api/provider', { method: 'POST', body: JSON.stringify({ provider: $('key-provider').value, apiKey: $('api-key').value }) }); $('api-key').value = ''; status('Provider key saved locally') } catch (error) { status(error.message, true) } })
+$('image-form').addEventListener('submit', async (event) => { event.preventDefault(); try { status('Image generation running with a durable local checkpoint…'); const body = await api('/api/assets/image', { method: 'POST', body: JSON.stringify({ workspace: $('workspace').value, prompt: $('image-prompt').value, output: $('image-output').value, aspectRatio: $('image-aspect').value, cloudLogs: $('cloudLogs').checked }) }); status(`Image run ${body.run.state}: ${body.run.result?.relativePath || body.run.id}`); await refresh() } catch (error) { status(error.message, true) } })
 $('asset-form').addEventListener('submit', async (event) => { event.preventDefault(); try { status('3D generation running with a durable local checkpoint…'); const body = await api('/api/assets/3d', { method: 'POST', body: JSON.stringify({ workspace: $('workspace').value, prompt: $('asset-prompt').value, output: $('asset-output').value, mode: $('asset-mode').value, cloudLogs: $('cloudLogs').checked }) }); status(`3D run ${body.run.state}: ${body.run.result?.relativePath || body.run.id}`); await refresh() } catch (error) { status(error.message, true) } })
 $('refresh-runs').addEventListener('click', () => refresh().catch((error) => status(error.message, true)))
 
@@ -110,7 +116,7 @@ $('run-form').addEventListener('submit', async (event) => {
     status('Agent running. Every tool step is checkpointed locally…')
     const body = await api('/api/runs', { method: 'POST', body: JSON.stringify({
       prompt: $('prompt').value, workspace: $('workspace').value, mode, provider: $('provider').value,
-      model: $('model').value, runtime: $('runtime').value, generate3d: $('generate3d').checked,
+      model: $('model').value, runtime: $('runtime').value, generateImages: $('generateImages').checked, generate3d: $('generate3d').checked,
       cloudLogs: $('cloudLogs').checked, allowShell: $('allowShell').checked, files: await files(),
     }) })
     await api('/api/config', { method: 'POST', body: JSON.stringify({ mode, provider: $('provider').value, model: $('model').value, runtime: $('runtime').value, cloudLogs: $('cloudLogs').checked }) })

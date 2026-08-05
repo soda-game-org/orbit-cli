@@ -25,8 +25,13 @@ test('protects management APIs and isolates preview content on another origin', 
     assert.equal(provider, 'openrouter')
     return [{ id: 'vendor/model', name: 'Model', vision: true }]
   } }
+  let imageInput
+  const assetImage = { create: async (input) => {
+    imageInput = input
+    return { id: 'run_11111111-1111-4111-8111-111111111111', state: 'completed', result: { relativePath: input.output } }
+  } }
   const server = new WebCliServer({
-    asset3d: {}, manager: {}, auth, byok, config, credentials, store, apiFactory: () => ({}), publishFactory: () => ({}), directories,
+    asset3d: {}, assetImage, manager: {}, auth, byok, config, credentials, store, apiFactory: () => ({}), publishFactory: () => ({}), directories,
   })
   const started = await server.start({ open: false })
   t.after(() => server.close())
@@ -38,12 +43,21 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.equal(page.status, 200)
   assert.match(page.headers.get('content-security-policy'), /frame-src http:\/\/127\.0\.0\.1:\*/)
   assert.match(await page.text(), /id="browse-models"/)
+  const pageHtml = await fetch(started.origin).then((response) => response.text())
+  assert.match(pageHtml, /id="generateImages"/)
+  assert.match(pageHtml, /id="image-form"/)
+  assert.match(pageHtml, /id="preview"[^>]+sandbox="allow-scripts allow-pointer-lock allow-same-origin"/)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`)).status, 403)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: { ...headers, Origin: 'http://evil.invalid' } })).status, 403)
   const bootstrapResponse = await fetch(`${started.origin}/api/bootstrap`, { headers })
   assert.equal(bootstrapResponse.status, 200)
   const bootstrap = await bootstrapResponse.json()
   assert.equal(bootstrap.providers.find((provider) => provider.id === 'zhipu-cn').label, 'Zhipu BigModel (China)')
+  assert.equal(bootstrap.runs[0].failureCategory, 'none')
+  assert.equal(bootstrap.runs[0].recoveryDisposition, 'terminal')
+  const persistedCheckpoint = JSON.parse(await fs.readFile(path.join(store.directory(run.id), 'checkpoint.json'), 'utf8'))
+  assert.equal(Object.hasOwn(persistedCheckpoint, 'failureCategory'), false)
+  assert.equal(Object.hasOwn(persistedCheckpoint, 'recoveryDisposition'), false)
   const { Origin: _origin, ...browserGetHeaders } = headers
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: browserGetHeaders })).status, 200)
   const catalog = await fetch(`${started.origin}/api/provider/models?provider=openrouter`, { headers }).then((response) => response.json())
@@ -51,6 +65,15 @@ test('protects management APIs and isolates preview content on another origin', 
   const saved = await fetch(`${started.origin}/api/provider`, { method: 'POST', headers, body: JSON.stringify({ provider: 'kimi-global', apiKey: 'test-key' }) })
   assert.equal(saved.status, 200)
   assert.deepEqual(savedCredential, { account: 'provider:kimi-global', secret: 'test-key' })
+  const imageResponse = await fetch(`${started.origin}/api/assets/image`, {
+    method: 'POST', headers, body: JSON.stringify({ workspace, prompt: 'An original arcade icon', output: 'assets/images/icon.png', aspectRatio: '1:1' }),
+  })
+  assert.equal(imageResponse.status, 200)
+  const imageBody = await imageResponse.json()
+  assert.equal(imageBody.run.failureCategory, 'none')
+  assert.equal(imageBody.run.recoveryDisposition, 'terminal')
+  assert.equal(imageInput.source, 'cli_gui')
+  assert.equal(imageInput.output, 'assets/images/icon.png')
 
   const envelope = await fetch(`${started.origin}/api/runs/${run.id}/preview`, { method: 'POST', headers, body: '{}' }).then((response) => response.json())
   const preview = await fetch(envelope.url)

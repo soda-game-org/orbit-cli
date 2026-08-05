@@ -18,7 +18,7 @@
 Orbit CLI 需要 Node.js 22 或更高版本。
 
 ```sh
-git clone https://github.com/soda-game-org/orbit-cli.git
+git clone https://github.com/the-super-engine/orbit-cli.git
 cd orbit-cli
 npm ci
 npm link
@@ -83,6 +83,17 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
+通过已登录的 Orbit Worker 生成 PNG 图片：
+
+```sh
+orbit image \
+  --workspace "$PWD/my-game" \
+  --prompt "一个原创的透明背景霓虹检查点图标" \
+  --output assets/images/checkpoint.png
+```
+
+如需让游戏开发 Agent 在运行中生成图片，可在 Orbit OAuth 模式下添加 `--images`。图片生成需要明确开启，目前按 Orbit 计费；BYOK 编码任务不会静默切换到 Orbit 计费。
+
 通过 Orbit 或自己的 Replicate 账号生成 GLB 素材：
 
 ```sh
@@ -115,6 +126,6 @@ orbit publish <run-id>
 - 运行 `orbit --help` 查看完整命令说明。
 - 运行 `orbit capabilities` 查看当前版本支持的功能。
 - 阅读[安全策略](SECURITY.md)。
-- 从 [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases) 下载版本。
+- 从 [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases) 下载版本。
 
 Orbit CLI 由 **SODA GAME** 开发，基于 [MIT License](LICENSE) 开源。

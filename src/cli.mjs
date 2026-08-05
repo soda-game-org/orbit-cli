@@ -4,6 +4,7 @@ import process from 'node:process'
 import { createApplication } from './app.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
+import { withRecoveryView } from './recovery-view.mjs'
 import { boundedString, publicError } from './util.mjs'
 
 const HELP = `Orbit CLI ${VERSION}
@@ -14,9 +15,11 @@ Usage:
   orbit providers models <provider>
   orbit generate --prompt <text> [--workspace <absolute>] [--mode orbit|byok]
                  [--provider <id>] [--model <id>] [--runtime <id>]
-                 [--attach <absolute-image> ...] [--3d] [--allow-shell]
+                 [--attach <absolute-image> ...] [--images] [--3d] [--allow-shell]
                  [--cloud-logs|--no-cloud-logs]
   orbit resume <run-id> [--retry-unsafe] [--allow-shell]
+  orbit image --prompt <text> [--workspace <absolute>] [--output <relative.png>]
+              [--aspect 1:1|9:16|16:9] [--resume <run-id>] [--retry-unsafe]
   orbit 3d --prompt <text> [--workspace <absolute>] [--output <relative.glb>]
            [--mode orbit|byok] [--resume <run-id>]
   orbit runs
@@ -107,10 +110,12 @@ async function confirm(question) {
 }
 
 function printRun(run) {
+  const view = withRecoveryView(run)
   console.log(JSON.stringify({
-    id: run.id, state: run.state, mode: run.mode, source: run.source, operation: run.operation,
-    iteration: run.iteration, workspace: run.workspace, updatedAt: run.updatedAt,
-    unsafeResumeRequired: run.unsafeResumeRequired, lastError: run.lastError, result: run.result,
+    id: view.id, state: view.state, mode: view.mode, source: view.source, operation: view.operation,
+    iteration: view.iteration, workspace: view.workspace, updatedAt: view.updatedAt,
+    unsafeResumeRequired: view.unsafeResumeRequired, lastError: view.lastError, result: view.result,
+    failureCategory: view.failureCategory, recoveryDisposition: view.recoveryDisposition,
   }, null, 2))
 }
 
@@ -123,6 +128,20 @@ async function direct3d(app, flags) {
     workspace: path.resolve(String(flags.workspace || process.cwd())),
     prompt: boundedString(flags.prompt, '3D prompt', 8_000),
     output: typeof flags.output === 'string' ? flags.output : 'assets/models/generated.glb',
+    cloudLogs: booleanFlag(flags, 'cloud-logs', config.cloudLogs),
+  })
+}
+
+async function directImage(app, flags) {
+  const resumeId = typeof flags.resume === 'string' ? flags.resume : null
+  if (resumeId) return app.assetImage.resume(resumeId, { retryUnsafe: booleanFlag(flags, 'retry-unsafe') })
+  const config = await app.config.get()
+  return app.assetImage.create({
+    source: 'cli',
+    workspace: path.resolve(String(flags.workspace || process.cwd())),
+    prompt: boundedString(flags.prompt, 'Image prompt', 8_000),
+    output: typeof flags.output === 'string' ? flags.output : 'assets/images/generated.png',
+    aspectRatio: oneOf(String(flags.aspect || '1:1'), ['1:1', '9:16', '16:9'], 'Image aspect ratio'),
     cloudLogs: booleanFlag(flags, 'cloud-logs', config.cloudLogs),
   })
 }
@@ -176,7 +195,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       source: 'cli', prompt: boundedString(flags.prompt, 'Prompt', 32_000),
       workspace: path.resolve(String(flags.workspace || process.cwd())), operation: flags.edit === true ? 'edit' : 'create',
       mode, provider, model: typeof flags.model === 'string' ? flags.model : config.model, runtime,
-      generate3d: booleanFlag(flags, '3d'), cloudLogs, allowShell: booleanFlag(flags, 'allow-shell'),
+      generateImages: booleanFlag(flags, 'images'), generate3d: booleanFlag(flags, '3d'), cloudLogs, allowShell: booleanFlag(flags, 'allow-shell'),
       referenceImages: Array.isArray(flags.attach) ? flags.attach.map((file) => path.resolve(String(file))) : [],
     })
     printRun(run)
@@ -187,7 +206,14 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     const stored = await app.store.load(action)
     const run = stored.kind === 'asset3d'
       ? await app.asset3d.resume(action, { retryUnsafe: booleanFlag(flags, 'retry-unsafe') })
-      : await app.manager.resume(action, { retryUnsafe: booleanFlag(flags, 'retry-unsafe'), allowShell: booleanFlag(flags, 'allow-shell') })
+      : stored.kind === 'assetimage'
+        ? await app.assetImage.resume(action, { retryUnsafe: booleanFlag(flags, 'retry-unsafe') })
+        : await app.manager.resume(action, { retryUnsafe: booleanFlag(flags, 'retry-unsafe'), allowShell: booleanFlag(flags, 'allow-shell') })
+    printRun(run)
+    return run.state === 'completed' ? 0 : 2
+  }
+  if (command === 'image') {
+    const run = await directImage(app, flags)
     printRun(run)
     return run.state === 'completed' ? 0 : 2
   }
@@ -197,12 +223,16 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     return run.state === 'completed' ? 0 : 2
   }
   if (command === 'runs') {
-    for (const run of await app.store.list()) console.log(`${run.id}\t${run.state}\t${run.mode}\t${run.updatedAt}\t${run.workspace}`)
+    for (const checkpoint of await app.store.list()) {
+      const run = withRecoveryView(checkpoint)
+      console.log(`${run.id}\t${run.state}\t${run.mode}\t${run.updatedAt}\t${run.workspace}\t${run.failureCategory}\t${run.recoveryDisposition}`)
+    }
     return 0
   }
   if (command === 'capabilities') {
     console.table([
       { capability: 'reference_images', status: 'supported', detail: 'PNG/JPEG/WebP; signature and path verified' },
+      { capability: 'image_generation', status: 'supported', detail: 'Orbit OAuth Worker; explicit opt-in or standalone command' },
       { capability: 'documents', status: 'unsupported', detail: 'No silent fallback; use the desktop product' },
       { capability: 'gis', status: 'unsupported', detail: 'Intentionally unavailable in CLI and Web CLI' },
       { capability: '3d_models', status: 'supported', detail: 'Orbit OAuth Worker or user Replicate key' },
