@@ -67,6 +67,7 @@ export interface OrbitProviderCompletionInput {
 export const DEFAULT_MODEL_OUTPUT_TOKENS: number
 export const MAX_PROVIDER_RESPONSE_BYTES: number
 export const MAX_MODEL_ID_CHARS: number
+export const REPLICATE_IMAGE_MODEL: string
 export const PROVIDERS: Readonly<Record<OrbitProviderId, OrbitProviderDefinition>>
 export const PROVIDER_IDS: readonly OrbitProviderId[]
 export const CODING_PROVIDER_IDS: readonly OrbitCodingProviderId[]
@@ -102,7 +103,28 @@ export interface OrbitReplicate3dState {
   [key: string]: unknown
 }
 
+export interface OrbitReplicateImageState {
+  predictionId?: string
+  status?: string
+  requestPending?: boolean
+  outputUrl?: string
+  model?: string
+  [key: string]: unknown
+}
+
 export function validateReplicateDeliveryUrl(value: unknown): string
+export function generateReplicateImage(input: {
+  apiKey: string
+  prompt: string
+  aspectRatio?: '1:1' | '9:16' | '16:9'
+  model?: string
+  state?: OrbitReplicateImageState
+  signal?: AbortSignal | null
+  fetchImpl?: typeof fetch
+  persist?: (state: OrbitReplicateImageState) => void | Promise<void>
+  onProgress?: (prediction: Record<string, unknown>) => void | Promise<void>
+  pollIntervalMs?: number
+}): Promise<{ predictionId: string; status: string; outputUrl: string; model: string }>
 export function generateReplicateModel3d(input: {
   apiKey: string
   prompt: string

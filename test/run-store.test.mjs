@@ -25,6 +25,17 @@ test('recovers an abandoned run and requires confirmation for a pending unsafe t
   assert.equal(recovered.unsafeResumeRequired, true)
 })
 
+test('recovers a pending BYOK image by polling its saved Replicate prediction without unsafe replay', async (t) => {
+  const { store, workspace } = await storeFixture(t)
+  const run = await store.create({ workspace, prompt: 'test', mode: 'byok' })
+  run.pendingTool = { id: 'image-call-1', name: 'generate_image', arguments: '{}' }
+  run.assetImages = { 'image-call-1': { predictionId: 'prediction-1', status: 'processing', requestPending: false } }
+  await store.transition(run, 'running')
+  const [recovered] = await store.recoverInterrupted()
+  assert.equal(recovered.state, 'interrupted')
+  assert.equal(recovered.unsafeResumeRequired, false)
+})
+
 test('does not recover a run whose process lock is live', async (t) => {
   const { store, workspace } = await storeFixture(t)
   const run = await store.create({ workspace, prompt: 'test', mode: 'orbit' })

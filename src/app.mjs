@@ -22,7 +22,7 @@ export function createApplication({ directories = appDirectories(), fetchImpl = 
   const apiFactory = (source = 'cli') => new OrbitApi(auth, { fetchImpl, source })
   const byok = new ByokProvider(credentials, { fetchImpl })
   const threeD = new ThreeDService({ api: apiFactory('cli'), credentials, fetchImpl })
-  const image = new ImageService()
+  const image = new ImageService({ credentials, fetchImpl })
   const cloudLogs = new CloudLogSink(apiFactory, { directories })
   const manager = new RunManager({ store, config, credentials, auth, apiFactory, byok, threeD, image, cloudLogs })
   const asset3d = new Asset3DManager({ store, config, auth, credentials, apiFactory, threeD, cloudLogs })

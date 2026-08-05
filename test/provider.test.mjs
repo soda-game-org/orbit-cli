@@ -4,6 +4,7 @@ import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
 import { ByokProvider } from '../src/provider.mjs'
 import {
+  generateReplicateImage,
   generateReplicateModel3d,
   normalizeProviderUsage,
   parseProviderAssistant,
@@ -311,6 +312,36 @@ test('shared Replicate 3D transport resumes a persisted prediction and trusts on
   assert.equal(calls[1].init.headers.Authorization, 'Bearer replicate-key')
   assert.equal(persisted.some((entry) => entry.predictionId === 'prediction-1'), true)
   assert.throws(() => validateReplicateDeliveryUrl('https://example.com/model.glb'), /untrusted/)
+})
+
+test('shared Replicate image transport uses a durable prediction and requests a PNG', async () => {
+  const state = {}
+  const calls = []
+  const result = await generateReplicateImage({
+    apiKey: 'replicate-key',
+    prompt: 'Original neon checkpoint art for an arcade racing game',
+    aspectRatio: '16:9',
+    state,
+    pollIntervalMs: 1,
+    persist: async () => {},
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init })
+      if (String(url).includes('/models/')) return Response.json({ id: 'image-prediction-1', status: 'starting' })
+      return Response.json({ status: 'succeeded', output: 'https://images.replicate.delivery/game.png' })
+    },
+  })
+  assert.deepEqual(result, {
+    predictionId: 'image-prediction-1', status: 'succeeded',
+    outputUrl: 'https://images.replicate.delivery/game.png', model: 'google/nano-banana',
+  })
+  assert.equal(calls[0].url, 'https://api.replicate.com/v1/models/google/nano-banana/predictions')
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer replicate-key')
+  assert.deepEqual(JSON.parse(calls[0].init.body), { input: {
+    prompt: 'Original neon checkpoint art for an arcade racing game',
+    aspect_ratio: '16:9', output_format: 'png',
+  } })
+  assert.equal(state.requestPending, false)
+  assert.equal(state.predictionId, 'image-prediction-1')
 })
 
 test('shared Replicate 3D transport marks a definitive provider rejection safe to retry', async () => {

@@ -179,7 +179,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       } else if (action === 'remove') {
         await app.credentials.delete(providerCredentialAccount(provider)); console.log(`${PROVIDERS[provider].label} key removed.`)
       } else {
-        if (provider === 'replicate') throw new Error('Replicate is tested by a real 3D request; no billable test is sent automatically')
+        if (provider === 'replicate') throw new Error('Replicate is tested by real image or 3D generation; no billable test is sent automatically')
         console.log(await app.byok.test(provider, typeof flags.model === 'string' ? flags.model : undefined) ? 'Provider connection passed.' : 'Provider response did not pass the check.')
       }
     } else throw new Error('Usage: orbit providers list|set|remove|test|models <provider>')
@@ -232,7 +232,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   if (command === 'capabilities') {
     console.table([
       { capability: 'reference_images', status: 'supported', detail: 'PNG/JPEG/WebP; signature and path verified' },
-      { capability: 'image_generation', status: 'supported', detail: 'Orbit OAuth Worker; explicit opt-in or standalone command' },
+      { capability: 'image_generation', status: 'supported', detail: 'Agent-integrated: Orbit OAuth Worker or user Replicate key' },
       { capability: 'documents', status: 'unsupported', detail: 'No silent fallback; use the desktop product' },
       { capability: 'gis', status: 'unsupported', detail: 'Intentionally unavailable in CLI and Web CLI' },
       { capability: '3d_models', status: 'supported', detail: 'Orbit OAuth Worker or user Replicate key' },

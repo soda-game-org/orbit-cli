@@ -6,6 +6,19 @@ import { appDirectories, ensurePrivateDirectory, id, isRecord, readJson, writeJs
 const RESUMABLE_STATES = new Set(['queued', 'running', 'recovering', 'interrupted', 'paused'])
 const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled'])
 
+function pendingToolNeedsUnsafeRetry(run) {
+  const pending = run.pendingTool
+  if (!pending) return false
+  if (pending.name === 'shell') return true
+  if (pending.name === 'generate_image') {
+    const state = run.assetImages?.[pending.id]
+    if (state?.output || run.mode === 'byok' && state?.predictionId) return false
+    return state?.requestPending === true || run.mode === 'orbit'
+  }
+  if (pending.name === 'generate_3d_model') return !(run.mode === 'byok' && run.asset3d?.predictionId)
+  return false
+}
+
 export class RunStore {
   constructor({ directories = appDirectories(), now = () => new Date() } = {}) {
     this.directories = directories
@@ -112,7 +125,7 @@ export class RunStore {
       if (run.state !== 'running' && run.state !== 'recovering') continue
       if (await this.isActive(run.id)) continue
       const pendingUnsafe = run.mode === 'byok' && Boolean(run.pendingModelCall)
-        || ['shell', 'generate_image', 'generate_3d_model'].includes(run.pendingTool?.name)
+        || pendingToolNeedsUnsafeRetry(run)
         || run.kind === 'assetimage' && run.assetImage?.requestPending && !run.assetImage?.output
         || run.kind === 'asset3d' && run.mode === 'byok' && run.asset3d?.requestPending && !run.asset3d?.predictionId
       run.unsafeResumeRequired = pendingUnsafe

@@ -8,6 +8,7 @@
 export const DEFAULT_MODEL_OUTPUT_TOKENS = 16_000
 export const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
 export const MAX_MODEL_ID_CHARS = 120
+export const REPLICATE_IMAGE_MODEL = 'google/nano-banana'
 
 export const PROVIDERS = Object.freeze({
   openrouter: {
@@ -376,7 +377,7 @@ function replicateOutputUrl(value) {
     for (const item of value) { const found = replicateOutputUrl(item); if (found) return found }
   }
   if (value && typeof value === 'object') {
-    for (const key of ['glb', 'mesh', 'model', 'output']) {
+    for (const key of ['glb', 'mesh', 'model', 'image', 'images', 'url', 'output']) {
       const found = replicateOutputUrl(value[key]); if (found) return found
     }
   }
@@ -384,47 +385,51 @@ function replicateOutputUrl(value) {
 }
 
 export function validateReplicateDeliveryUrl(value) {
-  if (!value) throw new Error('Replicate returned no GLB download URL')
+  if (!value) throw new Error('Replicate returned no asset download URL')
   const url = new URL(value)
   const host = url.hostname.toLowerCase()
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')
     || (host !== 'replicate.delivery' && !host.endsWith('.replicate.delivery'))) {
-    throw new Error('Replicate returned an untrusted model download URL')
+    throw new Error('Replicate returned an untrusted asset download URL')
   }
   return url.href
 }
 
-export async function generateReplicateModel3d({
-  apiKey, prompt, faceCount = 100_000, enablePbr = true, state = {},
-  signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
+async function runReplicatePrediction({
+  apiKey, model, input, label, state, signal, fetchImpl, persist, onProgress, pollIntervalMs,
 }) {
   const token = String(apiKey || '').trim()
   if (!token) throw new Error('No Replicate API key is configured')
-  const model = PROVIDERS.replicate.defaultModel
   if (!state.predictionId) {
     state.requestPending = true
+    state.model = model
     await persist?.(state)
-    const response = await fetchImpl(`https://api.replicate.com/v1/models/${model}/predictions`, {
-      method: 'POST', signal,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: {
-        prompt: String(prompt || '').slice(0, 8_000),
-        face_count: Math.min(1_500_000, Math.max(40_000, Number(faceCount) || 100_000)),
-        generate_type: 'Normal',
-        enable_pbr: enablePbr !== false,
-      } }),
-    })
+    let response
+    try {
+      response = await fetchImpl(`https://api.replicate.com/v1/models/${model}/predictions`, {
+        method: 'POST', signal,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input }),
+      })
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+        code: 'REPLICATE_SUBMISSION_UNCERTAIN',
+      })
+    }
     const body = await responseJson(response)
     if (!response.ok) {
-      // The provider definitively rejected the request, so a later retry cannot
-      // duplicate a billable prediction. Network/invalid-success ambiguity
-      // intentionally leaves requestPending=true for the host to fail closed.
+      // A structured provider rejection proves that no ambiguous client-side
+      // replay is needed. Transport failures intentionally leave the pending
+      // marker set so the host can require an explicit paid retry.
       state.requestPending = false
       await persist?.(state)
-      throw Object.assign(new Error(body?.detail || `Replicate 3D request failed (${response.status})`), { status: response.status })
+      throw Object.assign(new Error(body?.detail || `Replicate ${label} request failed (${response.status})`), { status: response.status })
     }
     if (typeof body?.id !== 'string' || !body.id) {
-      throw Object.assign(new Error(body?.detail || `Replicate 3D request failed (${response.status})`), { status: response.status })
+      throw Object.assign(new Error(body?.detail || `Replicate ${label} request returned no prediction id`), {
+        status: response.status,
+        code: 'REPLICATE_SUBMISSION_UNCERTAIN',
+      })
     }
     state.predictionId = body.id
     state.status = body.status
@@ -436,17 +441,56 @@ export async function generateReplicateModel3d({
       signal, headers: { Authorization: `Bearer ${token}` },
     })
     const prediction = await responseJson(response)
-    if (!response.ok || !prediction) throw Object.assign(new Error(`Replicate 3D polling failed (${response.status})`), { status: response.status })
+    if (!response.ok || !prediction) throw Object.assign(new Error(`Replicate ${label} polling failed (${response.status})`), { status: response.status })
     state.status = prediction.status
     await persist?.(state)
     await onProgress?.(prediction)
     if (['succeeded', 'failed', 'canceled'].includes(prediction.status)) {
-      if (prediction.status !== 'succeeded') throw new Error(`Replicate 3D generation ${prediction.status}: ${prediction.error || 'unknown error'}`)
+      if (prediction.status !== 'succeeded') throw new Error(`Replicate ${label} generation ${prediction.status}: ${prediction.error || 'unknown error'}`)
       const outputUrl = validateReplicateDeliveryUrl(replicateOutputUrl(prediction.output))
       state.outputUrl = outputUrl
       await persist?.(state)
-      return { predictionId: state.predictionId, status: prediction.status, outputUrl }
+      return { predictionId: state.predictionId, status: prediction.status, outputUrl, model }
     }
     await retryDelay(Math.min(30_000, Math.max(250, Number(pollIntervalMs) || 5_000)), signal)
   }
+}
+
+export async function generateReplicateImage({
+  apiKey, prompt, aspectRatio = '1:1', model = REPLICATE_IMAGE_MODEL, state = {},
+  signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
+}) {
+  const ratio = ['1:1', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '1:1'
+  const selectedModel = String(model || REPLICATE_IMAGE_MODEL).trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(selectedModel)) {
+    throw new TypeError('Replicate image model id is invalid')
+  }
+  return runReplicatePrediction({
+    apiKey,
+    model: selectedModel,
+    input: {
+      prompt: String(prompt || '').slice(0, 8_000),
+      aspect_ratio: ratio,
+      output_format: 'png',
+    },
+    label: 'image', state, signal, fetchImpl, persist, onProgress, pollIntervalMs,
+  })
+}
+
+export async function generateReplicateModel3d({
+  apiKey, prompt, faceCount = 100_000, enablePbr = true, state = {},
+  signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
+}) {
+  const model = PROVIDERS.replicate.defaultModel
+  return runReplicatePrediction({
+    apiKey,
+    model,
+    input: {
+        prompt: String(prompt || '').slice(0, 8_000),
+        face_count: Math.min(1_500_000, Math.max(40_000, Number(faceCount) || 100_000)),
+        generate_type: 'Normal',
+        enable_pbr: enablePbr !== false,
+    },
+    label: '3D', state, signal, fetchImpl, persist, onProgress, pollIntervalMs,
+  }).then(({ predictionId, status, outputUrl }) => ({ predictionId, status, outputUrl }))
 }

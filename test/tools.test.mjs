@@ -47,11 +47,11 @@ test('does not allow npm install lifecycle scripts through the shell tool', asyn
   await assert.rejects(executor.execute(call('shell', { command: 'npm install' })), /allowlist/)
 })
 
-test('offers image generation only to explicit Orbit runs and checkpoints tool output', async (t) => {
+test('offers image generation to explicit Orbit and BYOK game-agent runs and checkpoints tool output', async (t) => {
   const orbitTools = agentTools({ mode: 'orbit', generateImages: true, generate3d: false })
   assert.equal(orbitTools.some((item) => item.function.name === 'generate_image'), true)
   assert.equal(agentTools({ mode: 'orbit', generateImages: false }).some((item) => item.function.name === 'generate_image'), false)
-  assert.equal(agentTools({ mode: 'byok', generateImages: true }).some((item) => item.function.name === 'generate_image'), false)
+  assert.equal(agentTools({ mode: 'byok', generateImages: true }).some((item) => item.function.name === 'generate_image'), true)
 
   const { workspace, store, run } = await fixture(t)
   run.mode = 'orbit'
@@ -73,6 +73,28 @@ test('offers image generation only to explicit Orbit runs and checkpoints tool o
   assert.equal(result.relativePath, 'assets/images/icon.png')
   assert.equal(received.workspace, await fs.realpath(workspace))
   assert.equal((await store.load(run.id)).assetImages['image-call-1'].output.relativePath, 'assets/images/icon.png')
+})
+
+test('routes BYOK image tool calls through the same game-agent executor without an Orbit API', async (t) => {
+  const { workspace, store, run } = await fixture(t)
+  run.generateImages = true
+  await store.save(run)
+  let received
+  const executor = new ToolExecutor({
+    workspace, store, run,
+    image: { generate: async (input) => {
+      received = input
+      input.state.output = { relativePath: input.output, model: 'google/nano-banana' }
+      await input.persist()
+      return input.state.output
+    } },
+  })
+  const toolCall = call('generate_image', { prompt: 'Original game background', output_path: 'assets/images/background.png', aspect_ratio: '16:9' })
+  toolCall.id = 'byok-image-call-1'
+  const result = JSON.parse(await executor.execute(toolCall))
+  assert.equal(received.mode, 'byok')
+  assert.equal(received.api, undefined)
+  assert.equal(result.relativePath, 'assets/images/background.png')
 })
 
 test('reuses a verified generated image across different model tool-call ids', async (t) => {

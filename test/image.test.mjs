@@ -175,3 +175,56 @@ test('ImageService fails closed when a paid request has an ambiguous result', as
   }), (error) => error.code === 'UNSAFE_IMAGE_RETRY_REQUIRED')
   assert.equal(state.requestPending, true)
 })
+
+test('ImageService materializes a BYOK Replicate prediction as a verified local PNG', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-image-byok-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const state = {}
+  const requests = []
+  const service = new ImageService({
+    credentials: { get: async (account) => {
+      assert.equal(account, 'provider:replicate')
+      return 'replicate-key'
+    } },
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ url: String(url), init })
+      if (String(url).includes('/models/')) return Response.json({ id: 'prediction-image-1', status: 'starting' })
+      if (String(url).includes('/predictions/')) return Response.json({ id: 'prediction-image-1', status: 'succeeded', output: 'https://replicate.delivery/test/game.png' })
+      assert.equal(String(url), 'https://replicate.delivery/test/game.png')
+      assert.equal(init.redirect, 'error')
+      return new Response(PNG, { headers: { 'content-type': 'image/png' } })
+    },
+  })
+  const output = await service.generate({
+    mode: 'byok', workspace, output: 'assets/images/game.png',
+    prompt: 'Original high-impact game background', aspectRatio: '16:9', state,
+    pollIntervalMs: 1, persist: async () => {},
+  })
+  assert.equal(requests.length, 3)
+  assert.equal(output.relativePath, 'assets/images/game.png')
+  assert.equal(output.model, 'google/nano-banana')
+  assert.equal(output.width, 1)
+  assert.equal(output.height, 1)
+  assert.equal(sha256(await fs.readFile(output.path)), sha256(PNG))
+  assert.deepEqual(state.output, output)
+})
+
+test('ImageService requires explicit confirmation after an ambiguous Replicate submission', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-image-byok-unsafe-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const state = {}
+  const service = new ImageService({
+    credentials: { get: async () => 'replicate-key' },
+    fetchImpl: async () => { throw new TypeError('connection reset') },
+  })
+  await assert.rejects(service.generate({
+    mode: 'byok', workspace, output: 'assets/images/game.png',
+    prompt: 'Original high-impact game background', state, persist: async () => {},
+  }), (error) => error.code === 'UNSAFE_IMAGE_RETRY_REQUIRED')
+  assert.equal(state.requestPending, true)
+  assert.equal(state.predictionId, undefined)
+})

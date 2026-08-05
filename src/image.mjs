@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { boundedString, canonicalDirectory, id, isContained, sha256 } from './util.mjs'
+import { providerCredentialAccount } from './credentials.mjs'
+import { boundedString, canonicalDirectory, collectStream, id, isContained, sha256 } from './util.mjs'
+import { generateReplicateImage } from '../packages/orbit-provider-core/index.mjs'
+
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 const EXTENSIONS = Object.freeze({
   'image/png': '.png',
@@ -41,6 +46,9 @@ async function prepareTarget(workspace, output) {
 async function writeImage(prepared, generated) {
   const expectedExtension = EXTENSIONS[generated.contentType]
   if (expectedExtension !== '.png') throw new Error('Orbit returned an image format that does not match the requested .png output')
+  if (!Buffer.from(generated.bytes).subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)) {
+    throw new Error('Image bytes do not match the declared PNG format')
+  }
   const { root, relative, target } = prepared
   const parent = path.dirname(target)
   if (await fs.realpath(parent) !== parent || !isContained(root, parent)) throw new Error('Image output directory changed while generating')
@@ -63,11 +71,89 @@ async function writeImage(prepared, generated) {
 }
 
 export class ImageService {
+  constructor({ credentials = null, fetchImpl = fetch } = {}) {
+    this.credentials = credentials
+    this.fetchImpl = fetchImpl
+  }
+
   async generate(input) {
     const state = input.state || {}
     if (state.output) return state.output
     const prompt = boundedString(input.prompt, 'Image prompt', 8_000)
     const prepared = await prepareTarget(input.workspace, input.output)
+    if (input.mode === 'byok') return this.#byok({ ...input, state, prompt, prepared })
+    return this.#official({ ...input, state, prompt, prepared })
+  }
+
+  async #byok(input) {
+    const { state } = input
+    if (state.requestPending && !state.predictionId) {
+      if (!input.retryUnsafe) {
+        const error = new Error('The previous Replicate image submission may have succeeded; check Replicate usage before retrying')
+        error.code = 'UNSAFE_IMAGE_RETRY_REQUIRED'
+        throw error
+      }
+      const retryAttempt = Number(state.retryAttempt || 0) + 1
+      for (const key of Object.keys(state)) delete state[key]
+      state.retryAttempt = retryAttempt
+      await input.persist?.(state)
+    }
+    const token = await this.credentials?.get(providerCredentialAccount('replicate'))
+    if (!token) throw new Error('No Replicate API key is configured')
+    let generated
+    try {
+      generated = await generateReplicateImage({
+        apiKey: token,
+        prompt: input.prompt,
+        aspectRatio: input.aspectRatio || '1:1',
+        state,
+        signal: input.signal,
+        fetchImpl: this.fetchImpl,
+        persist: input.persist,
+        onProgress: input.onProgress,
+        pollIntervalMs: input.pollIntervalMs,
+      })
+    } catch (error) {
+      if (state.requestPending && !state.predictionId) {
+        const unsafe = new Error(error instanceof Error ? error.message : String(error))
+        unsafe.code = 'UNSAFE_IMAGE_RETRY_REQUIRED'
+        throw unsafe
+      }
+      if (state.predictionId && !['failed', 'canceled'].includes(state.status)) {
+        const resumable = new Error(error instanceof Error ? error.message : String(error))
+        resumable.code = 'IMAGE_PROVIDER_RESUME_REQUIRED'
+        throw resumable
+      }
+      throw error
+    }
+    const response = await this.fetchImpl(generated.outputUrl, { redirect: 'error', signal: input.signal })
+    if (!response.ok) {
+      const resumable = new Error(`Replicate image download failed (${response.status})`)
+      resumable.code = 'IMAGE_PROVIDER_RESUME_REQUIRED'
+      throw resumable
+    }
+    const bytes = await collectStream(response.body, MAX_IMAGE_BYTES)
+    const contentType = String(response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase()
+    const width = bytes.byteLength >= 24 && Buffer.from(bytes).subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)
+      ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(16)
+      : null
+    const height = width != null ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20) : null
+    const output = await writeImage(input.prepared, {
+      bytes,
+      contentType,
+      width,
+      height,
+      model: generated.model,
+      degraded: false,
+      degradedFrom: null,
+    })
+    state.output = output
+    await input.persist?.(state)
+    return output
+  }
+
+  async #official(input) {
+    const { state } = input
     if (state.requestPending && !input.retryUnsafe) {
       const error = new Error('The previous image request may have reached the provider; explicit unsafe retry is required')
       error.code = 'UNSAFE_IMAGE_RETRY_REQUIRED'
@@ -107,11 +193,11 @@ export class ImageService {
     try {
       generated = await input.api.generateImage(state.cloudRunId, {
         requestKey: state.requestKey,
-        prompt,
+        prompt: input.prompt,
         aspectRatio: input.aspectRatio || '1:1',
         signal: input.signal,
       })
-      const output = await writeImage(prepared, generated)
+      const output = await writeImage(input.prepared, generated)
       state.requestPending = false
       state.output = output
       await input.persist?.(state)

@@ -54,7 +54,7 @@ orbit web
 
 ## 选择模型接入方式
 
-Orbit CLI 提供两种模型链路：通过 Orbit OAuth 登录，使用 Orbit Cloud 和 Orbit 计费；或者填写自己的 API Key，接入 OpenRouter、OpenAI、DeepSeek、智谱 BigModel（中国区）、Z.AI（全球区）、火山方舟、Kimi（中国区）或 Kimi（全球区）。3D 生成还支持 Replicate Key。
+Orbit CLI 提供两种模型链路：通过 Orbit OAuth 登录，使用 Orbit Cloud 和 Orbit 计费；或者填写自己的 API Key，接入 OpenRouter、OpenAI、DeepSeek、智谱 BigModel（中国区）、Z.AI（全球区）、火山方舟、Kimi（中国区）或 Kimi（全球区）。配置 Replicate Key 后，BYOK 游戏开发 Agent 可以在工作过程中生成图片和 3D 素材。
 
 ```sh
 orbit providers set openrouter
@@ -83,16 +83,20 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
-通过已登录的 Orbit Worker 生成 PNG 图片：
+让游戏开发 Agent 在编写游戏代码的同时规划并生成图片素材：
 
 ```sh
-orbit image \
+orbit generate \
+  --mode byok \
+  --provider openrouter \
   --workspace "$PWD/my-game" \
-  --prompt "一个原创的透明背景霓虹检查点图标" \
-  --output assets/images/checkpoint.png
+  --prompt "制作一个完成度高的霓虹赛车游戏" \
+  --images
 ```
 
-如需让游戏开发 Agent 在运行中生成图片，可在 Orbit OAuth 模式下添加 `--images`。图片生成需要明确开启，目前按 Orbit 计费；BYOK 编码任务不会静默切换到 Orbit 计费。
+使用 Orbit OAuth 时，同一工具通过认证后的 Orbit Worker 调用并按 Orbit 计费；使用 BYOK 时，通过保存在操作系统凭据保险库中的 Replicate Key 调用，并由用户自己的 Replicate 账户计费。Agent 会判断少量高价值图片是否确实能提高游戏质量，把校验后的 PNG 写入工作区并在最终游戏中实际引用；付费步骤会保留恢复检查点。两条计费链路不会互相静默降级。
+
+`orbit image` 仍作为一个轻量便利命令保留，但 Orbit CLI 的主要工作方式是上面的 coding agent 运行：围绕同一个游戏一起生产代码、图片、3D 模型和其他素材。
 
 通过 Orbit 或自己的 Replicate 账号生成 GLB 素材：
 

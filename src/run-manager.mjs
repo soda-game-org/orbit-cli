@@ -61,6 +61,22 @@ function safeToolCall(call) {
     && typeof call.function.arguments === 'string'
 }
 
+function pendingToolRequiresUnsafeRetry(run) {
+  const pending = run.pendingTool
+  if (!pending) return false
+  if (pending.name === 'shell') return true
+  if (pending.name === 'generate_image') {
+    const state = run.assetImages?.[pending.id]
+    if (state?.output) return false
+    if (run.mode === 'byok' && state?.predictionId) return false
+    return state?.requestPending === true || run.mode === 'orbit'
+  }
+  if (pending.name === 'generate_3d_model') {
+    return !(run.mode === 'byok' && run.asset3d?.predictionId)
+  }
+  return false
+}
+
 export class RunManager {
   constructor({ store, config, credentials, auth, apiFactory, byok, image, threeD, cloudLogs }) {
     this.store = store
@@ -85,8 +101,8 @@ export class RunManager {
     if (mode === 'byok' && !await this.credentials.get(providerCredentialAccount(provider))) {
       throw new Error(`Configure a ${PROVIDERS[provider]?.label || provider} API key first`)
     }
-    if (mode === 'byok' && input.generateImages) {
-      throw new Error('CLI image generation currently requires Orbit OAuth; BYOK mode will not silently fall back')
+    if (mode === 'byok' && input.generateImages && !await this.credentials.get(providerCredentialAccount('replicate'))) {
+      throw new Error('Configure a Replicate API key before enabling BYOK image generation')
     }
     if (mode === 'byok' && input.generate3d && !await this.credentials.get(providerCredentialAccount('replicate'))) {
       throw new Error('Configure a Replicate API key before enabling BYOK 3D generation')
@@ -266,9 +282,13 @@ export class RunManager {
               return run
             }
           } catch (error) {
-            if (error?.code === 'UNSAFE_IMAGE_RETRY_REQUIRED') {
-              run.unsafeResumeRequired = true
-              run.lastError = { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED', message: publicError(error) }
+            if (['UNSAFE_IMAGE_RETRY_REQUIRED', 'IMAGE_PROVIDER_RESUME_REQUIRED'].includes(error?.code)) {
+              const unsafe = error.code === 'UNSAFE_IMAGE_RETRY_REQUIRED'
+              run.unsafeResumeRequired = unsafe
+              run.lastError = {
+                code: unsafe ? 'UNSAFE_RETRY_CONFIRMATION_REQUIRED' : 'IMAGE_PROVIDER_RESUME_REQUIRED',
+                message: publicError(error),
+              }
               await this.store.transition(run, 'paused')
               await this.#event(run, 'run_paused', { errorCode: run.lastError.code })
               return run
@@ -381,11 +401,13 @@ export class RunManager {
 
   async #recoverPendingTool(run, executor, options) {
     if (!run.pendingTool) return
-    if (['shell', 'generate_image', 'generate_3d_model'].includes(run.pendingTool.name) && !options.retryUnsafe) {
+    if (pendingToolRequiresUnsafeRetry(run) && !options.retryUnsafe) {
       run.unsafeResumeRequired = true
       await this.store.save(run)
       throw Object.assign(new Error('Explicit --retry-unsafe is required for the pending non-idempotent tool'), { code: 'UNSAFE_RETRY_CONFIRMATION_REQUIRED' })
     }
+    run.unsafeResumeRequired = false
+    await this.store.save(run)
     const call = { id: run.pendingTool.id, type: 'function', function: { name: run.pendingTool.name, arguments: run.pendingTool.arguments } }
     const content = await executor.execute(call)
     run.messages.push({ role: 'tool', tool_call_id: call.id, content })
@@ -400,7 +422,9 @@ export class RunManager {
       'Create or edit the selected local workspace. Use update_agent_plan first, keep changes focused, validate, and call finish.',
       'Only the generic public skill below is available locally. Specialized official game templates and private Orbit skills are not present; never claim otherwise.',
       run.generate3d ? '3D generation is enabled and may be used when it materially helps the requested game.' : '3D generation is disabled; use local procedural or existing assets.',
-      run.mode === 'orbit' && run.generateImages ? 'Image generation is enabled. Use generate_image only when a generated asset materially improves the game.' : 'Image generation is disabled; do not request generated image assets.',
+      run.generateImages
+        ? `2D game-asset generation is enabled through ${run.mode === 'orbit' ? 'the authenticated Orbit Worker and Orbit billing' : "the user's Replicate key and Replicate billing"}. Plan visual assets alongside code and 3D work. Use generate_image for a small number of high-impact gameplay images when they materially improve quality, reference every generated path from the final game, and prefer procedural visuals when they are the stronger fit.`
+        : 'Image generation is disabled; use deliberate local CSS, SVG, canvas, procedural, or existing project assets and do not invent generated image paths.',
       await publicGenericSkill(),
     ].join('\n\n')
   }

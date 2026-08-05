@@ -54,7 +54,7 @@ orbit web
 
 ## Choose how models are accessed
 
-Orbit CLI offers two model routes. Sign in with Orbit OAuth to use Orbit Cloud and Orbit billing, or use your own API key for OpenRouter, OpenAI, DeepSeek, Zhipu BigModel (China), Z.AI (Global), Volcengine Ark, Kimi (China), or Kimi (Global). Replicate keys are supported for 3D generation.
+Orbit CLI offers two model routes. Sign in with Orbit OAuth to use Orbit Cloud and Orbit billing, or use your own API key for OpenRouter, OpenAI, DeepSeek, Zhipu BigModel (China), Z.AI (Global), Volcengine Ark, Kimi (China), or Kimi (Global). A Replicate key gives the game-development agent access to image and 3D asset generation in BYOK runs.
 
 ```sh
 orbit providers set openrouter
@@ -83,16 +83,20 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
-Generate a PNG image through the authenticated Orbit Worker:
+Let the game-development agent plan and generate image assets alongside the game code:
 
 ```sh
-orbit image \
+orbit generate \
+  --mode byok \
+  --provider openrouter \
   --workspace "$PWD/my-game" \
-  --prompt "An original neon checkpoint icon on a transparent background" \
-  --output assets/images/checkpoint.png
+  --prompt "Build a polished neon racing game" \
+  --images
 ```
 
-To let the game-development agent generate image assets when needed, add `--images` to an Orbit OAuth run. Image generation is explicit and currently uses Orbit billing; BYOK coding runs never silently fall back to Orbit billing.
+With Orbit OAuth, the same tool uses the authenticated Orbit Worker and Orbit billing. In BYOK mode, it uses the Replicate key stored in the operating-system vault and the user's Replicate billing. The agent decides whether a small number of high-impact images will improve the game, writes verified PNG files into the workspace, references them from the final build, and checkpoints paid work for recovery. The two billing routes never silently fall back to one another.
+
+`orbit image` remains available as a small convenience command, but Orbit CLI's primary workflow is the coding agent run above: game code, images, 3D models, and other assets are produced together for the requested game.
 
 Generate a GLB asset with Orbit or your Replicate account:
 

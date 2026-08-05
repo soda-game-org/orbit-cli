@@ -1,6 +1,6 @@
 {
   "name": "@the-super-engine/orbit-cli",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Open-source local CLI and Web CLI for Orbit Arcade",
   "type": "module",
   "license": "MIT",

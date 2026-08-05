@@ -40,18 +40,22 @@ const BYOK_3D_TOOL = tool('generate_3d_model', 'Generate one original GLB model 
   properties: { prompt: { type: 'string', minLength: 8, maxLength: 8000 }, output_path: { type: 'string' }, face_count: { type: 'integer' }, enable_pbr: { type: 'boolean' } },
 })
 
-const OFFICIAL_IMAGE_TOOL = tool('generate_image', 'Generate one original image through the authenticated Orbit Worker when image generation was explicitly enabled. Within a run, output_path is immutable and repeated calls reuse the verified generated asset.', {
+function imageTool(mode) {
+  return tool('generate_image', mode === 'orbit'
+    ? 'Generate one original game image through the authenticated Orbit Worker. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use.'
+    : 'Generate one original game image with the user-configured Replicate key. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use. The user\'s Replicate account may be billed.', {
   type: 'object', additionalProperties: false, required: ['prompt', 'output_path'],
   properties: {
     prompt: { type: 'string', minLength: 8, maxLength: 8000 },
     output_path: { type: 'string', description: 'Safe workspace-relative .png path.' },
     aspect_ratio: { type: 'string', enum: ['1:1', '9:16', '16:9'] },
   },
-})
+  })
+}
 
 export function agentTools({ mode, generateImages = false, generate3d }) {
   const tools = [...BASE_TOOLS]
-  if (mode === 'orbit' && generateImages) tools.splice(tools.length - 3, 0, OFFICIAL_IMAGE_TOOL)
+  if (generateImages) tools.splice(tools.length - 3, 0, imageTool(mode))
   if (generate3d) tools.splice(tools.length - 3, 0, mode === 'orbit' ? OFFICIAL_3D_TOOL : BYOK_3D_TOOL)
   return tools
 }
@@ -327,7 +331,7 @@ export class ToolExecutor {
       return JSON.stringify({ ok: true, finished: true, validation: this.run.lastValidation })
     }
     if (name === 'generate_image') {
-      if (this.run.mode !== 'orbit' || !this.run.generateImages || !this.api) throw new Error('Official image generation was not enabled for this run')
+      if (!this.run.generateImages || (this.run.mode === 'orbit' && !this.api)) throw new Error('Image generation was not enabled for this run')
       const outputPath = relativePath(args.output_path)
       this.run.assetImages ||= {}
       this.run.assetImages[call.id] ||= {}
@@ -345,6 +349,7 @@ export class ToolExecutor {
       this.run.assetImages[call.id].outputPath = outputPath
       await this.store.save(this.run)
       const result = await this.image.generate({
+        mode: this.run.mode,
         api: this.api,
         workspace: root,
         prompt: args.prompt,
