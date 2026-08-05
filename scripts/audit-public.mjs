@@ -12,11 +12,12 @@ const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 // Local E2E evidence is deliberately kept beside the checkout so failures can
 // be inspected, but it is gitignored and excluded by package.json `files`.
 const ignored = new Set(['.git', '.orbit-e2e', 'node_modules', 'coverage'])
-const allowedTopLevel = new Set(['.github', '.gitignore', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE.md', 'README.md', 'README.zh-CN.md', 'RELEASES.md', 'SECURITY.md', 'bin', 'package-lock.json', 'package.json', 'packages', 'scripts', 'skills', 'src', 'test'])
+const allowedTopLevel = new Set(['.github', '.gitignore', 'CONTRIBUTING.md', 'LICENSE', 'NOTICE.md', 'README.md', 'README.zh-CN.md', 'RELEASES.md', 'SECURITY.md', 'assets', 'bin', 'package-lock.json', 'package.json', 'packages', 'scripts', 'skills', 'src', 'test'])
 const privateSkillFiles = []
 const findings = []
 
 const PUBLIC_GENERIC_SKILL = 'skills/generic-html-game/SKILL.md'
+const PUBLIC_README_ASSET = 'assets/readme/orbit-cli-hero.jpg'
 const PACK_ALLOWED_EXACT = new Set([
   'LICENSE',
   'NOTICE.md',
@@ -71,6 +72,7 @@ async function visit(directory, prefix = '') {
     if (entry.isDirectory()) { await visit(absolute, relative); continue }
     if (!entry.isFile()) { findings.push(`${relative}: non-regular file`); continue }
     if (secretLikeFileName(entry.name) || /\.tgz$/i.test(entry.name)) findings.push(`${relative}: forbidden file type`)
+    if (relative.startsWith('assets/') && relative !== PUBLIC_README_ASSET) findings.push(`${relative}: unexpected public asset`)
     if (relative.startsWith('skills/') && relative !== PUBLIC_GENERIC_SKILL) privateSkillFiles.push(relative)
     const stat = await fs.stat(absolute)
     if (stat.size > MAX_SCANNED_FILE_BYTES) { findings.push(`${relative}: unexpectedly large file`); continue }

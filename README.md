@@ -1,15 +1,46 @@
-# Orbit CLI
+<p align="center">
+  <img src="assets/readme/orbit-cli-hero.jpg" alt="A terminal command flowing into a collection of Orbit Arcade game covers" width="100%" />
+</p>
 
-[简体中文](README.zh-CN.md) | English
+<h1 align="center">Orbit CLI</h1>
 
-<p align="center"><strong>Orbit CLI</strong> is an open-source AI game-development agent that runs locally in your terminal or browser.</p>
+<p align="center"><strong>Turn a prompt in your terminal into a playable arcade game.</strong></p>
 
 <p align="center">
-  Create, play, and publish games on <a href="https://orbit-arcade.com">Orbit Arcade</a>.<br />
-  For the full desktop experience, get <a href="https://orbit-arcade.com/orbit-engine">Orbit Engine</a> for Windows and macOS.
+  An open-source, local-first AI game-development agent for building, testing, resuming, and publishing browser games.
+</p>
+
+<p align="center">
+  <a href="README.md"><strong>English</strong></a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@soda_game/orbit-cli"><img src="https://img.shields.io/npm/v/%40soda_game%2Forbit-cli?style=flat-square&amp;logo=npm&amp;label=npm" alt="npm version" /></a>
+  <a href="https://github.com/soda-game-org/orbit-cli/actions/workflows/ci.yml"><img src="https://github.com/soda-game-org/orbit-cli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/soda-game-org/orbit-cli?style=flat-square" alt="MIT License" /></a>
+  <a href="https://www.npmjs.com/package/@soda_game/orbit-cli"><img src="https://img.shields.io/node/v/%40soda_game%2Forbit-cli?style=flat-square&amp;logo=node.js" alt="Node.js version" /></a>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="https://orbit-arcade.com">Play on Orbit Arcade</a> ·
+  <a href="https://github.com/soda-game-org/orbit-cli/releases">Releases</a> ·
+  <a href="https://orbit-arcade.com/orbit-engine">Orbit Engine</a>
 </p>
 
 ---
+
+## What Orbit CLI does
+
+Orbit CLI runs the game-building loop on your machine while you choose how models and generated assets are accessed.
+
+| Capability | What it means |
+| --- | --- |
+| Agentic game building | Plans the loop, writes the project, validates the playable, and keeps working through tool calls. |
+| Terminal or local Web CLI | Use the command line for speed or open `orbit web` for a graphical workflow. |
+| Orbit Cloud or BYOK | Sign in with Orbit OAuth, or bring supported provider keys stored in your operating-system vault. |
+| Images and 3D in the same run | Attach references and let the agent produce selected image or GLB assets alongside the game code. |
+| Checkpointed and explicit | Resume interrupted work safely; publishing only happens when you run `orbit publish`. |
 
 ## Quickstart
 

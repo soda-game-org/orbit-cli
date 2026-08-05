@@ -1,15 +1,46 @@
-# Orbit CLI
+<p align="center">
+  <img src="assets/readme/orbit-cli-hero.jpg" alt="一条终端命令生成出一组 Orbit Arcade 小游戏" width="100%" />
+</p>
 
-简体中文 | [English](README.md)
+<h1 align="center">Orbit CLI</h1>
 
-<p align="center"><strong>Orbit CLI</strong> 是一个开源的本地 AI 游戏开发工具，可在终端或浏览器中运行。</p>
+<p align="center"><strong>在终端写下一句话，把它变成可以立即游玩的街机小游戏。</strong></p>
 
 <p align="center">
-  在 <a href="https://orbit-arcade.com">Orbit Arcade</a> 创建、游玩和发布游戏。<br />
-  如需完整桌面体验，可下载适用于 Windows 和 macOS 的 <a href="https://orbit-arcade.com/orbit-engine">Orbit Engine</a>。
+  一个开源、本地优先的 AI 游戏开发 Agent，用于构建、测试、续跑和发布浏览器游戏。
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md"><strong>简体中文</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@soda_game/orbit-cli"><img src="https://img.shields.io/npm/v/%40soda_game%2Forbit-cli?style=flat-square&amp;logo=npm&amp;label=npm" alt="npm 版本" /></a>
+  <a href="https://github.com/soda-game-org/orbit-cli/actions/workflows/ci.yml"><img src="https://github.com/soda-game-org/orbit-cli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI 状态" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/soda-game-org/orbit-cli?style=flat-square" alt="MIT License" /></a>
+  <a href="https://www.npmjs.com/package/@soda_game/orbit-cli"><img src="https://img.shields.io/node/v/%40soda_game%2Forbit-cli?style=flat-square&amp;logo=node.js" alt="Node.js 版本" /></a>
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="https://orbit-arcade.com">在 Orbit Arcade 游玩</a> ·
+  <a href="https://github.com/soda-game-org/orbit-cli/releases">版本发布</a> ·
+  <a href="https://orbit-arcade.com/orbit-engine">Orbit Engine</a>
 </p>
 
 ---
+
+## Orbit CLI 能做什么
+
+Orbit CLI 在你的电脑上运行完整的游戏开发循环，同时由你决定模型和生成素材通过哪条链路访问。
+
+| 能力 | 说明 |
+| --- | --- |
+| Agent 游戏开发 | 规划玩法循环、编写项目、校验可玩结果，并通过工具调用持续完成任务。 |
+| 终端或本地 Web CLI | 使用命令行快速工作，也可以运行 `orbit web` 打开图形界面。 |
+| Orbit Cloud 或 BYOK | 使用 Orbit OAuth 登录，或接入受支持的模型服务；密钥保存在操作系统凭据保险库。 |
+| 同一次运行生成图片和 3D | 添加参考图，让 Agent 在编写代码的同时按需生成图片或 GLB 素材。 |
+| 可续跑、明确发布 | 中断后从检查点安全恢复；只有执行 `orbit publish` 才会发布。 |
 
 ## 快速开始
 
