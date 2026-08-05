@@ -18,6 +18,12 @@
 Orbit CLI requires Node.js 22 or newer.
 
 ```sh
+npm install --global @soda_game/orbit-cli
+```
+
+To work from source instead:
+
+```sh
 git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
 npm ci --ignore-scripts

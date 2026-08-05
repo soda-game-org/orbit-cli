@@ -18,6 +18,12 @@
 Orbit CLI 需要 Node.js 22 或更高版本。
 
 ```sh
+npm install --global @soda_game/orbit-cli
+```
+
+如需从源码开发：
+
+```sh
 git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
 npm ci --ignore-scripts
