@@ -18,9 +18,9 @@
 Orbit CLI 需要 Node.js 22 或更高版本。
 
 ```sh
-git clone https://github.com/the-super-engine/orbit-cli.git
+git clone https://github.com/soda-game-org/orbit-cli.git
 cd orbit-cli
-npm ci
+npm ci --ignore-scripts
 npm link
 ```
 
@@ -51,6 +51,16 @@ orbit generate \
 ```sh
 orbit web
 ```
+
+### 构建命令安全说明
+
+Orbit 默认不会运行项目代码。部分生成项目需要在本地安装依赖或执行构建；请先检查工作区，再明确启用：
+
+```sh
+orbit resume <run-id> --allow-shell
+```
+
+命令范围受到限制，并使用隔离的 HOME 与 npm 缓存，但项目自己的 `build` 脚本仍以当前操作系统用户的文件系统权限运行。`--allow-shell` 表示允许执行生成项目，不是安全沙箱。
 
 ## 选择模型接入方式
 
@@ -130,6 +140,7 @@ orbit publish <run-id>
 - 运行 `orbit --help` 查看完整命令说明。
 - 运行 `orbit capabilities` 查看当前版本支持的功能。
 - 阅读[安全策略](SECURITY.md)。
-- 从 [GitHub Releases](https://github.com/the-super-engine/orbit-cli/releases) 下载版本。
+- 阅读[发布完整性策略与历史标签说明](RELEASES.md)。
+- 在 [GitHub Releases](https://github.com/soda-game-org/orbit-cli/releases) 查看源码标签与发布说明。
 
 Orbit CLI 由 **SODA GAME** 开发，基于 [MIT License](LICENSE) 开源。

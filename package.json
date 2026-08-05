@@ -1,18 +1,18 @@
 {
   "name": "@the-super-engine/orbit-cli",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Open-source local CLI and Web CLI for Orbit Arcade",
   "type": "module",
   "license": "MIT",
   "author": "SODA GAME",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/the-super-engine/orbit-cli.git"
+    "url": "git+https://github.com/soda-game-org/orbit-cli.git"
   },
   "bugs": {
-    "url": "https://github.com/the-super-engine/orbit-cli/issues"
+    "url": "https://github.com/soda-game-org/orbit-cli/issues"
   },
-  "homepage": "https://github.com/the-super-engine/orbit-cli#readme",
+  "homepage": "https://github.com/soda-game-org/orbit-cli#readme",
   "keywords": [
     "orbit",
     "arcade",
@@ -36,6 +36,7 @@
     "skills",
     "README.md",
     "README.zh-CN.md",
+    "RELEASES.md",
     "SECURITY.md",
     "NOTICE.md",
     "LICENSE"

@@ -31,7 +31,8 @@ Usage:
 
 Official mode uses Google OAuth and the Orbit Worker. BYOK secrets are accepted
 interactively or with --key-stdin and stored only in the operating-system vault.
-Publishing never happens implicitly.`
+Publishing never happens implicitly. --allow-shell executes generated project
+build code with your operating-system account; review the workspace first.`
 
 function parse(argv) {
   const positionals = []

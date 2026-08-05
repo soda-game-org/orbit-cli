@@ -26,7 +26,7 @@ const BASE_TOOLS = [
   tool('list_files', 'List workspace files.', { type: 'object', additionalProperties: false, properties: {} }),
   tool('grep_files', 'Search workspace text files.', { type: 'object', additionalProperties: false, required: ['pattern'], properties: { pattern: { type: 'string' }, case_sensitive: { type: 'boolean' } } }),
   tool('read_reference_media', 'Read the already-produced private reference analysis.', { type: 'object', additionalProperties: false, properties: { focus: { type: 'string' }, image_path: { type: 'string' } } }),
-  tool('shell', 'Run an allowlisted build or validation command when local shell execution was explicitly enabled.', { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' }, timeout_ms: { type: 'integer' } } }),
+  tool('shell', 'Run an explicitly enabled npm install/build or JavaScript syntax check. Project build scripts execute with the current operating-system user permissions.', { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' }, timeout_ms: { type: 'integer' } } }),
   tool('validate_project', 'Validate source contracts, build output, paths, and local preview readiness.', { type: 'object', additionalProperties: false, properties: {} }),
   tool('finish', 'Finish only after validation passes.', { type: 'object', additionalProperties: false, properties: {} }),
 ]
@@ -158,15 +158,19 @@ function parseAllowedCommand(command) {
   const parts = text.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((part) => part.replace(/^"|"$/g, '')) || []
   const joined = parts.join(' ')
   const nodeCheck = /^node --check ([A-Za-z0-9_./-]+)$/.exec(joined)
-  const allowed = /^npm (?:install --ignore-scripts|test|run [A-Za-z0-9:_-]+)$/.test(joined)
+  const allowed = /^npm (?:install --ignore-scripts|run build)$/.test(joined)
     || Boolean(nodeCheck)
   if (!allowed) throw new Error('Shell command is outside the safe allowlist')
   if (nodeCheck && !/\.(?:js|mjs|cjs)$/.test(relativePath(nodeCheck[1]))) throw new Error('node --check requires a workspace JavaScript file')
   return { command: parts[0], args: parts.slice(1) }
 }
 
-function runCommand(root, command, timeoutMs) {
+async function runCommand(root, command, timeoutMs) {
   const parsed = parseAllowedCommand(command)
+  const shellHome = path.join(root, '.orbit', 'shell-home')
+  const npmCache = path.join(root, '.orbit', 'npm-cache')
+  await fs.mkdir(shellHome, { recursive: true, mode: 0o700 })
+  await fs.mkdir(npmCache, { recursive: true, mode: 0o700 })
   return new Promise((resolve, reject) => {
     const child = spawn(parsed.command, parsed.args, {
       cwd: root,
@@ -177,10 +181,15 @@ function runCommand(root, command, timeoutMs) {
         Path: process.env.Path,
         PATHEXT: process.env.PATHEXT,
         SystemRoot: process.env.SystemRoot,
-        HOME: process.env.HOME,
-        USERPROFILE: process.env.USERPROFILE,
+        ComSpec: process.env.ComSpec,
+        HOME: shellHome,
+        USERPROFILE: shellHome,
+        npm_config_cache: npmCache,
+        npm_config_userconfig: path.join(shellHome, '.npmrc'),
+        npm_config_ignore_scripts: 'true',
         npm_config_audit: 'false',
         npm_config_update_notifier: 'false',
+        CI: '1',
         NO_COLOR: '1',
       },
     })
@@ -317,7 +326,7 @@ export class ToolExecutor {
       return String(this.run.referenceSummary).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'shell') {
-      if (!this.allowShell) throw new Error('Shell execution is disabled. Restart with --allow-shell after reviewing the risk.')
+      if (!this.allowShell) throw new Error('Project code execution is disabled. Review the workspace, then restart with --allow-shell only if you accept local-user filesystem access.')
       return JSON.stringify(await runCommand(root, args.command, args.timeout_ms)).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'validate_project') {

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { redactHighConfidenceSecrets } from './secret-scan.mjs'
 
 export function appDirectories(env = process.env) {
   const configBase = process.platform === 'win32'
@@ -121,8 +122,7 @@ export async function collectStream(stream, maximum) {
 }
 
 export function redactDiagnostic(value) {
-  return String(value || '')
-    .replace(/(?:sk|orb|gho|sb_secret)_[A-Za-z0-9._-]{12,}/g, '[redacted-token]')
+  return redactHighConfidenceSecrets(value)
     .replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, 'Bearer [redacted]')
     .replace(/[A-Za-z]:\\[^\s"']+|\/(?:Users|home)\/[^\s"']+/g, '[local-path]')
     .slice(0, 800)
