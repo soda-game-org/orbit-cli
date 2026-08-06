@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orbit Web CLI</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <div class="wordmark"><span class="orbit-mark" aria-hidden="true"></span><strong>ORBIT</strong><span>WEB CLI</span></div>
+      <div class="session"><span id="session-light" class="session-light"></span><span id="session-label">Checking session</span><button id="auth-button" class="quiet">Sign in</button></div>
+    </header>
+    <main class="grid">
+      <section class="workbench" aria-labelledby="build-heading">
+        <div class="section-heading"><p>LOCAL WORKBENCH</p><h1 id="build-heading">Build in your own workspace.</h1><span>Files stay local until you explicitly publish.</span><aside class="capability-note"><b>Capability boundary</b><span>Documents and GIS are not supported in this client. Unsupported media or missing model access stops with a visible, resumable error—never a silent billing or account fallback.</span></aside></div>
+        <form id="run-form">
+          <div class="mode-switch" role="group" aria-label="Model access">
+            <label><input type="radio" name="mode" value="orbit" checked><span><b>Orbit Cloud</b><small>OAuth · official models and private skills</small></span></label>
+            <label><input type="radio" name="mode" value="byok"><span><b>Use my API key</b><small>Local provider · generic public skill only</small></span></label>
+          </div>
+          <label class="field"><span>Workspace</span><input id="workspace" required placeholder="/absolute/path/to/my-game" autocomplete="off"></label>
+          <label class="field"><span>What should Orbit build?</span><textarea id="prompt" required rows="7" placeholder="A compact mobile-first arcade game with a complete replayable loop…"></textarea></label>
+          <div class="row three">
+            <label class="field"><span>Runtime</span><select id="runtime"><option value="html">HTML</option><option value="vanilla-ts">Vanilla TypeScript</option><option value="react-vite">React + Vite</option><option value="react-three-fiber">React Three Fiber</option><option value="three-vanilla">Three.js</option><option value="phaser">Phaser</option></select></label>
+            <label class="field"><span>Provider</span><select id="provider" aria-label="Coding provider"></select></label>
+            <label class="field"><span>Model</span><div class="model-picker"><input id="model" list="model-options" placeholder="Automatic"><button id="browse-models" type="button">Browse</button></div><datalist id="model-options"></datalist></label>
+          </div>
+          <div class="reference-drop"><label for="references"><span>REFERENCE IMAGES</span><b>Choose PNG, JPEG, or WebP</b><small>8 files · 5 MiB each · 16 MiB total · private analysis context</small></label><input id="references" type="file" multiple accept="image/png,image/jpeg,image/webp"><output id="reference-list">No images selected</output></div>
+          <div class="toggles">
+            <label><input id="generateImages" type="checkbox"><span><b>Generate game images</b><small>Agent-integrated · Orbit OAuth or Replicate key</small></span></label>
+            <label><input id="generate3d" type="checkbox"><span><b>Generate 3D models</b><small>Orbit OAuth or a Replicate key</small></span></label>
+            <label><input id="cloudLogs" type="checkbox"><span><b>Cloud diagnostics</b><small>Sanitized events marked as CLI GUI</small></span></label>
+            <label><input id="allowShell" type="checkbox"><span><b>Allow project code</b><small>Build scripts run with your local-user filesystem permissions</small></span></label>
+          </div>
+          <button class="launch" type="submit"><span>Start local agent</span><kbd>⌘ ↵</kbd></button>
+        </form>
+        <section class="keys" aria-labelledby="keys-heading"><div><p>BYOK VAULT</p><h2 id="keys-heading">Provider keys</h2></div><div class="key-row"><select id="key-provider" aria-label="Key provider"></select><input id="api-key" type="password" placeholder="Stored in your OS credential vault" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div></section>
+        <section class="asset-forge" aria-labelledby="image-heading"><div><p>STANDALONE ASSET RUN</p><h2 id="image-heading">Generate an image</h2><span>Uses Orbit OAuth. The paid request is checkpointed before it reaches the Worker.</span></div><form id="image-form"><textarea id="image-prompt" required rows="3" placeholder="A transparent neon checkpoint icon for a low-poly racing game…"></textarea><div class="asset-row"><select id="image-aspect" aria-label="Image aspect ratio"><option value="1:1">1:1</option><option value="9:16">9:16</option><option value="16:9">16:9</option></select><input id="image-output" value="assets/images/generated.png" aria-label="Image output path"><button type="submit">Generate image</button></div></form></section>
+        <section class="asset-forge" aria-labelledby="asset-heading"><div><p>STANDALONE ASSET RUN</p><h2 id="asset-heading">Generate a GLB model</h2><span>Uses Orbit OAuth or your Replicate key. The job checkpoint can resume after a crash.</span></div><form id="asset-form"><textarea id="asset-prompt" required rows="3" placeholder="A stylized low-poly spacecraft with clean topology and PBR materials…"></textarea><div class="asset-row"><select id="asset-mode"><option value="orbit">Orbit OAuth</option><option value="byok">Replicate key</option></select><input id="asset-output" value="assets/models/generated.glb" aria-label="3D output path"><button type="submit">Generate GLB</button></div></form></section>
+      </section>
+      <aside class="run-deck" aria-labelledby="runs-heading">
+        <div class="deck-head"><div><p>CHECKPOINT TAPE</p><h2 id="runs-heading">Local runs</h2></div><button id="refresh-runs" class="icon" aria-label="Refresh runs">↻</button></div>
+        <div id="status" class="status-line" role="status">Ready</div>
+        <div id="runs" class="runs"></div>
+        <div class="preview-frame"><div class="preview-head"><span>ISOLATED PREVIEW</span><div class="preview-ratios" role="group" aria-label="Preview ratio"><button type="button" data-preview-ratio="auto" class="active">Auto</button><button type="button" data-preview-ratio="4:3">4:3</button></div><span id="preview-state">No build selected</span></div><div id="preview-stage" class="preview-stage" data-ratio="auto"><iframe id="preview" title="Isolated game preview" sandbox="allow-scripts allow-pointer-lock allow-same-origin" referrerpolicy="no-referrer"></iframe></div></div>
+      </aside>
+    </main>
+  </div>
+  <dialog id="publish-dialog"><form method="dialog"><p>EXPLICIT NETWORK ACTION</p><h2>Publish this game?</h2><span>Orbit will upload the validated dist and sanitized source archive under your OAuth account. Generation and preview never publish automatically.</span><div><button value="cancel" class="quiet">Cancel</button><button id="confirm-publish" value="confirm">Publish</button></div></form></dialog>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
