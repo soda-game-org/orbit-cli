@@ -10,6 +10,51 @@ history.replaceState(null, '', `${location.pathname}${location.search}`)
 const $ = (id: string): any => document.getElementById(id)
 let state: any = { runs: [], auth: { signedIn: false }, config: {} }
 let publishRunId: string | null = null
+const PUBLISH_LOCALE_CHOICES: ReadonlyArray<{ tag: string; label: string }> = Object.freeze([
+  { tag: 'zh-Hans', label: '简体中文' },
+  { tag: 'zh-Hant', label: '繁體中文' },
+  { tag: 'ja', label: '日本語' },
+  { tag: 'ko', label: '한국어' },
+  { tag: 'es', label: 'Español' },
+  { tag: 'es-MX', label: 'Español (México)' },
+  { tag: 'fr', label: 'Français' },
+  { tag: 'de', label: 'Deutsch' },
+  { tag: 'it', label: 'Italiano' },
+  { tag: 'pt-BR', label: 'Português (Brasil)' },
+  { tag: 'ru', label: 'Русский' },
+  { tag: 'ar', label: 'العربية' },
+  { tag: 'hi', label: 'हिन्दी' },
+  { tag: 'th', label: 'ไทย' },
+  { tag: 'vi', label: 'Tiếng Việt' },
+])
+let publishLocales: string[] = []
+
+function renderPublishLocaleChips(): void {
+  const host = $('publish-locales')
+  if (!host) return
+  host.replaceChildren()
+  const enChip = document.createElement('span')
+  enChip.className = 'locale-chip locale-chip-en'
+  enChip.textContent = 'English'
+  host.append(enChip)
+  const selected = new Set(publishLocales)
+  for (const { tag, label } of PUBLISH_LOCALE_CHOICES) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'locale-chip'
+    chip.textContent = label
+    chip.dataset.tag = tag
+    chip.setAttribute('aria-pressed', selected.has(tag) ? 'true' : 'false')
+    chip.addEventListener('click', () => {
+      const next = new Set(publishLocales)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      publishLocales = [...next].sort()
+      renderPublishLocaleChips()
+    })
+    host.append(chip)
+  }
+}
 let refreshPromise: Promise<any> | null = null
 let configHydrated = false
 const viewKeys = { providers: '', runs: '' }
@@ -82,7 +127,7 @@ function runView(): void {
     actions.append(action('Relocate folder', () => relocate(run.id, run.workspace)))
     if (run.state === 'completed' && !['asset3d', 'assetimage'].includes(run.kind)) {
       actions.append(action('Preview', () => preview(run.id)))
-      actions.append(action('Publish', () => { publishRunId = run.id; $('publish-dialog').showModal() }))
+      actions.append(action('Publish', () => { publishRunId = run.id; $('publish-dialog').showModal(); renderPublishLocaleChips() }))
     }
     item.append(head, meta, detail, actions)
     return item
@@ -182,7 +227,7 @@ async function preview(runId: string): Promise<void> { try { const body = await 
 
 $('publish-dialog').addEventListener('close', async () => {
   if ($('publish-dialog').returnValue !== 'confirm' || !publishRunId) return
-  try { status('Publishing validated files under your Orbit account…'); const result = await api(`/api/runs/${publishRunId}/publish`, { method: 'POST', body: JSON.stringify({ confirmed: true }) }); status(`Published ${result.game?.title || result.game?.id}`) } catch (error) { status(errorMessage(error), true) } finally { publishRunId = null }
+  try { status('Publishing validated files under your Orbit account…'); const result = await api(`/api/runs/${publishRunId}/publish`, { method: 'POST', body: JSON.stringify({ confirmed: true, extraLocales: publishLocales }) }); status(`Published ${result.game?.title || result.game?.id}`) } catch (error) { status(errorMessage(error), true) } finally { publishRunId = null }
 })
 
 document.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') $('run-form').requestSubmit() })

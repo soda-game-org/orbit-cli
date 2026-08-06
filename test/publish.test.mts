@@ -69,3 +69,39 @@ test('rejects symbolic links anywhere in publish input', async (t) => {
   await fs.symlink(path.join(root, 'source.js'), path.join(root, 'linked.js'))
   await assert.rejects(new PublishService({}).prepare({ workspace: root }), /Symbolic links/)
 })
+
+test('publish forwards extra_locales[] (sorted, deduped, en filtered)', async (t) => {
+  const root = await fixture(t)
+  let captured: FormData | undefined
+  const service = new PublishService({
+    publish: async (form: FormData) => { captured = form; return { game: { id: 'g_test', title: 'T' } } },
+  })
+  await service.publish({ workspace: root, extraLocales: ['zh-Hans', 'ja', 'en', 'ja'] })
+  const meta = JSON.parse(String(captured!.get('meta')))
+  assert.deepEqual(meta.extra_locales, ['ja', 'zh-Hans'])
+  const cloud = JSON.parse(await fs.readFile(path.join(root, '.orbit', 'cloud.json'), 'utf8'))
+  assert.deepEqual(cloud.extraLocales, ['ja', 'zh-Hans'])
+})
+
+test('publish falls back to zh-Hans when legacy --locale zh is used', async (t) => {
+  const root = await fixture(t)
+  let captured: FormData | undefined
+  const service = new PublishService({
+    publish: async (form: FormData) => { captured = form; return { game: { id: 'g_test', title: 'T' } } },
+  })
+  await service.publish({ workspace: root, locale: 'zh' })
+  const meta = JSON.parse(String(captured!.get('meta')))
+  assert.deepEqual(meta.extra_locales, ['zh-Hans'])
+  assert.equal(meta.content_locale, 'zh')
+})
+
+test('publish omits extra_locales key when no extra locales are selected', async (t) => {
+  const root = await fixture(t)
+  let captured: FormData | undefined
+  const service = new PublishService({
+    publish: async (form: FormData) => { captured = form; return { game: { id: 'g_test', title: 'T' } } },
+  })
+  await service.publish({ workspace: root })
+  const meta = JSON.parse(String(captured!.get('meta')))
+  assert.equal(Object.hasOwn(meta, 'extra_locales'), false)
+})

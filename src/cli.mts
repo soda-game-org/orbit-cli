@@ -4,6 +4,7 @@ import process from 'node:process'
 import { createApplication } from './app.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
+import { normalizeExtraLocales } from './locales.mjs'
 import { withRecoveryView } from './recovery-view.mjs'
 import { boundedString, publicError } from './util.mjs'
 import type { OrbitRun } from './types.mjs'
@@ -41,7 +42,7 @@ Usage:
   orbit runs
   orbit runs relocate <run-id> --workspace <new-absolute-path>
   orbit capabilities
-  orbit publish <run-id> [--title <text>] [--locale en|zh] [--yes]
+  orbit publish <run-id> [--title <text>] [--locales <tag,...>] [--locale en|zh] [--yes]
   orbit logs enable|disable|flush
   orbit web [--no-open]
   orbit doctor
@@ -49,12 +50,15 @@ Usage:
 Official mode uses Google OAuth and the Orbit Worker. BYOK secrets are accepted
 interactively or with --key-stdin and stored only in the operating-system vault.
 Publishing never happens implicitly. --allow-shell executes generated project
-build code with your operating-system account; review the workspace first.`
+build code with your operating-system account; review the workspace first.
+--locales accepts comma-separated BCP47 tags (e.g. zh-Hans,ja,fr). English is
+always implicit. --locale en|zh is deprecated and synthesizes a single zh-Hans
+second locale when set to zh.`
 
 function parse(argv: string[]): { positionals: string[]; flags: Flags } {
   const positionals: string[] = []
   const flags = Object.create(null) as Flags
-  const repeat = new Set(['attach'])
+  const repeat = new Set(['attach', 'locales'])
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]!
     if (!item.startsWith('--')) { positionals.push(item); continue }
@@ -298,10 +302,17 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     if (run.state !== 'completed' || !run.lastValidation?.ok) throw new Error('Only a completed and validated game run can be published')
     await app.auth.accessToken()
     if (!booleanFlag(flags, 'yes') && !await confirm(`Publish ${run.workspace} publicly to Orbit?`)) throw new Error('Publish cancelled; nothing was uploaded')
+    const localeFlag = typeof flags.locale === 'string' ? flags.locale : undefined
+    const localesFlag = Array.isArray(flags.locales)
+      ? flags.locales.flatMap((v) => typeof v === 'string' ? v.split(/[,]+/).map((s) => s.trim()).filter(Boolean) : [])
+      : (typeof flags.locales === 'string' ? flags.locales.split(/[,]+/).map((s) => s.trim()).filter(Boolean) : [])
+    let extraLocales = normalizeExtraLocales(localesFlag)
+    if (extraLocales.length === 0 && localeFlag === 'zh') extraLocales = ['zh-Hans']
     const result = await app.publishFactory(app.apiFactory('cli')).publish({
       workspace: run.workspace, prompt: run.prompt, runtime: run.runtime,
       title: typeof flags.title === 'string' ? flags.title : undefined,
-      locale: flags.locale === 'zh' ? 'zh' : 'en', gameId: typeof flags['game-id'] === 'string' ? flags['game-id'] : undefined,
+      locale: localeFlag === 'zh' ? 'zh' : 'en', gameId: typeof flags['game-id'] === 'string' ? flags['game-id'] : undefined,
+      extraLocales,
     })
     console.log(JSON.stringify(result, null, 2))
     return 0

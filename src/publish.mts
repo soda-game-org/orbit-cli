@@ -5,6 +5,7 @@ import { createGzip } from 'node:zlib'
 import { Readable } from 'node:stream'
 import { scanSecretBytes, secretLikeFileName } from './secret-scan.mjs'
 import { canonicalDirectory, isContained, writeJsonAtomic } from './util.mjs'
+import { normalizeExtraLocales } from './locales.mjs'
 
 interface PublishFile {
   path: string
@@ -18,7 +19,14 @@ interface PublishInput extends Record<string, any> {
   prompt?: string
   runtime?: string
   gameId?: string | null
+  /** @deprecated Use `extraLocales` instead. When `extraLocales` is provided, `locale` is ignored. */
   locale?: string
+  /**
+   * Preferred multi-locale path. Each entry is a BCP47 tag that the agent should
+   * generate as an additional `STRINGS.<tag>` block. English is always implicit
+   * (the backend always receives `STRINGS.en`). Empty/missing ⇒ English-only.
+   */
+  extraLocales?: string[]
 }
 
 interface PublishApi {
@@ -149,6 +157,7 @@ export class PublishService {
 
   async publish(input: PublishInput): Promise<Record<string, any>> {
     const prepared = await this.prepare(input)
+    const extraLocales = normalizeExtraLocales(input.extraLocales ?? (input.locale === 'zh' ? ['zh-Hans'] : []))
     const form = new FormData()
     form.set('meta', JSON.stringify({
       ...(prepared.gameId ? { game_id: prepared.gameId } : {}),
@@ -158,6 +167,7 @@ export class PublishService {
       is_public: true,
       is_feed_listed: true,
       pro_runtime: prepared.runtime,
+      ...(extraLocales.length ? { extra_locales: extraLocales } : {}),
     }))
     form.set('source', new Blob([Uint8Array.from(prepared.archive)], { type: 'application/gzip' }), 'source.tar.gz')
     for (const file of prepared.dist) {
@@ -168,6 +178,7 @@ export class PublishService {
     if (typeof gameId !== 'string' || !gameId) throw new Error('Orbit returned no published game id')
     await writeJsonAtomic(path.join(prepared.root, '.orbit', 'cloud.json'), {
       version: 1, gameId, title: response.game.title || prepared.title, publishedAt: new Date().toISOString(),
+      ...(extraLocales.length ? { extraLocales } : {}),
     })
     return response
   }

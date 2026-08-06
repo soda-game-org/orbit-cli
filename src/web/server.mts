@@ -301,7 +301,10 @@ export class WebCliServer {
       const run = await this.store.load(publish[1]!)
       if (run.state !== 'completed' || !run.lastValidation?.ok) return send(response, 409, { error: 'Only completed and validated runs can be published' })
       const api = this.apiFactory('cli_gui')
-      const result = await this.publishFactory(api).publish({ workspace: run.workspace, title: body.title, prompt: run.prompt, runtime: run.runtime, locale: body.locale, gameId: body.gameId })
+      const extraLocales = Array.isArray(body.extraLocales)
+        ? body.extraLocales
+        : (typeof body.extraLocales === 'string' ? String(body.extraLocales).split(/[,]+/).map((s) => s.trim()).filter(Boolean) : [])
+      const result = await this.publishFactory(api).publish({ workspace: run.workspace, title: body.title, prompt: run.prompt, runtime: run.runtime, locale: body.locale, gameId: body.gameId, extraLocales })
       return send(response, 200, result)
     }
     return send(response, 404, { error: 'Not found' })

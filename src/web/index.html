@@ -48,7 +48,7 @@
       </aside>
     </main>
   </div>
-  <dialog id="publish-dialog"><form method="dialog"><p>EXPLICIT NETWORK ACTION</p><h2>Publish this game?</h2><span>Orbit will upload the validated dist and sanitized source archive under your OAuth account. Generation and preview never publish automatically.</span><div><button value="cancel" class="quiet">Cancel</button><button id="confirm-publish" value="confirm">Publish</button></div></form></dialog>
+  <dialog id="publish-dialog"><form method="dialog"><p>EXPLICIT NETWORK ACTION</p><h2>Publish this game?</h2><span>Orbit will upload the validated dist and sanitized source archive under your OAuth account. Generation and preview never publish automatically.</span><fieldset class="locale-field"><legend>In-game languages</legend><span class="locale-hint">English is always included. Toggle additional BCP47 locales for in-game STRINGS.</span><div id="publish-locales" class="locale-chips" role="group" aria-label="Additional in-game languages"></div></fieldset><div><button value="cancel" class="quiet">Cancel</button><button id="confirm-publish" value="confirm">Publish</button></div></form></dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
