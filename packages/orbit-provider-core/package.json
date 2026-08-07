@@ -1,0 +1,18 @@
+{
+  "name": "@soda_game/orbit-provider-core",
+  "version": "0.1.4",
+  "description": "Runtime-neutral model provider transport shared by Orbit clients",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "SODA GAME",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soda-game-org/orbit-cli.git",
+    "directory": "packages/orbit-provider-core"
+  },
+  "source": "./index.mts",
+  "engines": {
+    "node": ">=22"
+  }
+}
