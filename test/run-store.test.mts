@@ -55,6 +55,17 @@ test('writes checkpoints atomically with private permissions', async (t) => {
   assert.equal((await store.load(run.id)).schema, 'orbit.cli-run.v1')
 })
 
+test('reads the bounded local event timeline for on-demand run details', async (t) => {
+  const { store, workspace } = await storeFixture(t)
+  const run = await store.create({ workspace, prompt: 'test', mode: 'orbit' })
+  await store.appendEvent(run.id, 'tool_completed', { toolName: 'validate_project', success: true, durationMs: 250 })
+
+  const events = await store.events(run.id)
+  assert.equal(events.at(-1).type, 'tool_completed')
+  assert.equal(events.at(-1).toolName, 'validate_project')
+  assert.equal(events.at(-1).durationMs, 250)
+})
+
 test('does not persist the derived recovery view into v1 checkpoints', async (t) => {
   const { store, workspace } = await storeFixture(t)
   const run = await store.create({ workspace, prompt: 'test', mode: 'orbit' })

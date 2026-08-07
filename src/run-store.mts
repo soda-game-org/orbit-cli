@@ -121,6 +121,26 @@ export class RunStore {
     return event
   }
 
+  async events(runId: string): Promise<Record<string, unknown>[]> {
+    const file = path.join(this.directory(runId), 'events.jsonl')
+    let source = ''
+    try {
+      source = await fs.readFile(file, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+    if (Buffer.byteLength(source) > 2 * 1024 * 1024) throw new Error(`Run event history is unexpectedly large: ${runId}`)
+    return source.split(/\r?\n/).filter(Boolean).slice(-500).flatMap((line) => {
+      try {
+        const event: unknown = JSON.parse(line)
+        return isRecord(event) ? [event] : []
+      } catch {
+        return []
+      }
+    })
+  }
+
   async list(): Promise<OrbitRun[]> {
     await ensurePrivateDirectory(this.root)
     const entries = await fs.readdir(this.root, { withFileTypes: true })

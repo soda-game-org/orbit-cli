@@ -37,7 +37,7 @@ Orbit CLI runs the game-building loop on your machine while you choose how model
 | Capability | What it means |
 | --- | --- |
 | Agentic game building | Plans the loop, writes the project, validates the playable, and keeps working through tool calls. |
-| Terminal or local Web CLI | Use the command line for speed or open `orbit web` for a graphical workflow. |
+| Interactive terminal or local Web CLI | Keep iterating in one terminal session with live status, commands, and local history, or open `orbit web` for a graphical workflow. |
 | Orbit Cloud or BYOK | Sign in with Orbit OAuth, or bring supported provider keys stored in your operating-system vault. |
 | Images and 3D in the same run | Attach references and let the agent produce selected image or GLB assets alongside the game code. |
 | Checkpointed and explicit | Resume interrupted work safely; publishing only happens when you run `orbit publish`. |
@@ -73,7 +73,20 @@ Or run `orbit` with no arguments to open the keyboard-driven launcher:
 orbit
 ```
 
-Choose **Create a game** to enter a prompt and workspace, or jump directly to the Web CLI, local runs, account login, provider list, diagnostics, and command reference.
+Choose **Create a game** to enter a persistent terminal session. It starts in the current directory, accepts follow-up requests without exiting, keeps the active workspace/model/runtime visible, and collapses live agent work into a final result when each run ends. The other launcher actions open the Web CLI, local runs, account login, provider list, diagnostics, and command reference.
+
+Inside the session, type a request naturally or use the discoverable command palette:
+
+```text
+/new ./my-game
+/images on
+› Build a replayable mobile arcade game
+› Make the first round easier and improve the score feedback
+/details
+/web
+```
+
+Type `/help` for all session commands. Tab completes slash commands, arrow keys recall earlier input, requests typed while the agent is busy are queued for the next turn, `/resume` continues the latest resumable checkpoint, and Ctrl+C interrupts the active run without discarding the session. Scripted commands such as `orbit generate` keep their stable JSON output for automation.
 
 ### Create your first game
 
@@ -171,6 +184,8 @@ Orbit saves local checkpoints so interrupted work can continue:
 orbit runs
 orbit resume <run-id>
 ```
+
+In an interactive session, `/runs` shows recent checkpoints, `/resume [run-id]` continues one, and `/details [run-id]` expands its saved plan and tool timeline on demand. Completed work otherwise stays collapsed into the final summary.
 
 If the project folder moved, explicitly rebind every checkpoint for that workspace instead of editing local JSON by hand:
 

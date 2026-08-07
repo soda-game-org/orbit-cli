@@ -97,5 +97,37 @@ test('no-argument interactive startup dispatches the selected launcher action', 
     stdout: terminal,
     runWelcomeMenu: async () => 'help',
   }), 0)
-  assert.match(output.join('\n'), /Usage:\n  orbit auth login/)
+  assert.match(output.join('\n'), /orbit\s+Start an interactive game-building session/)
+  assert.match(output.join('\n'), /orbit auth login\|status\|logout/)
+})
+
+test('start building enters the persistent interactive session', async () => {
+  const app = {
+    store: { recoverInterrupted: async () => [] },
+    config: { get: async () => ({ mode: 'orbit', runtime: 'html' }) },
+  }
+  const terminal = { isTTY: true }
+  let received
+
+  assert.equal(await main([], {
+    app,
+    stdin: terminal,
+    stdout: terminal,
+    cwd: '/tmp/orbit-game',
+    runWelcomeMenu: async () => 'create',
+    runInteractiveSession: async (options) => { received = options; return 0 },
+  }), 0)
+  assert.equal(received.app, app)
+  assert.equal(received.cwd, '/tmp/orbit-game')
+})
+
+test('version and help are instant paths that do not initialize local state', async (t) => {
+  const output = []
+  t.mock.method(console, 'log', (...values) => output.push(values.join(' ')))
+  const app = { store: { recoverInterrupted: async () => { throw new Error('must not initialize') } } }
+
+  assert.equal(await main(['--version'], { app }), 0)
+  assert.equal(await main(['--help'], { app }), 0)
+  assert.match(output[0], /^\d+\.\d+\.\d+$/)
+  assert.match(output[1], /Start an interactive game-building session/)
 })

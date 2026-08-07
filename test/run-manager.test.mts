@@ -15,6 +15,7 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
   const workspace = path.join(root, 'workspace')
   const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
   let calls = 0
+  const progress = []
   const manager = new RunManager({
     store,
     config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html', cloudLogs: false }) },
@@ -34,11 +35,14 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
   })
   const run = await manager.create({
     source: 'cli_gui', workspace, prompt: 'Build a test arcade game', mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html',
+    onProgress: (event) => progress.push(event),
   })
   assert.equal(calls, 1)
   assert.equal(run.source, 'cli_gui')
   assert.equal(run.state, 'completed')
   assert.equal(run.lastValidation.ok, true)
+  assert.ok(progress.some((event) => event.type === 'model_started'))
+  assert.ok(progress.some((event) => event.type === 'tool_started' && event.toolName === 'validate_project'))
   const checkpoint = await store.load(run.id)
   assert.equal(checkpoint.state, 'completed')
   assert.equal(checkpoint.plan.currentTodoId, undefined)

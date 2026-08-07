@@ -10,6 +10,14 @@ import type { OrbitCodingProviderId } from '../packages/orbit-provider-core/inde
 
 type Dynamic = Record<string, any>
 
+export interface RunProgressEvent extends Record<string, unknown> {
+  runId: string
+  type: string
+  occurredAt: string
+}
+
+export type RunProgressListener = (event: RunProgressEvent) => void | Promise<void>
+
 function modelFromCatalog(catalog: Dynamic, excluded: Set<string> = new Set(), excludedPrefixes: string[] = []): string | null {
   const models = Array.isArray(catalog?.models) ? catalog.models : []
   const allowed = (model: Dynamic) => model?.available !== false
@@ -93,6 +101,7 @@ export class RunManager {
   readonly image: any
   readonly threeD: any
   readonly cloudLogs: any
+  readonly progressListeners = new Map<string, RunProgressListener>()
 
   constructor({ store, config, credentials, auth, apiFactory, byok, image, threeD, cloudLogs }: Dynamic) {
     this.store = store
@@ -138,15 +147,24 @@ export class RunManager {
       cloudLogs: input.cloudLogs ?? config.cloudLogs,
       references,
     })
-    return this.execute(run.id, { allowShell: input.allowShell === true, retryUnsafe: false })
+    return this.execute(run.id, {
+      allowShell: input.allowShell === true,
+      retryUnsafe: false,
+      onProgress: input.onProgress,
+    })
   }
 
-  async resume(runId: string, options: { allowShell?: boolean; retryUnsafe?: boolean } = {}): Promise<OrbitRun> {
-    return this.execute(runId, { allowShell: options.allowShell === true, retryUnsafe: options.retryUnsafe === true })
+  async resume(runId: string, options: { allowShell?: boolean; retryUnsafe?: boolean; onProgress?: RunProgressListener } = {}): Promise<OrbitRun> {
+    return this.execute(runId, {
+      allowShell: options.allowShell === true,
+      retryUnsafe: options.retryUnsafe === true,
+      onProgress: options.onProgress,
+    })
   }
 
-  async execute(runId: string, options: { allowShell: boolean; retryUnsafe: boolean }): Promise<OrbitRun> {
+  async execute(runId: string, options: { allowShell: boolean; retryUnsafe: boolean; onProgress?: RunProgressListener }): Promise<OrbitRun> {
     const release = await this.store.acquire(runId)
+    if (options.onProgress) this.progressListeners.set(runId, options.onProgress)
     const controller = new AbortController()
     const interrupt = () => controller.abort(new Error('Interrupted by user'))
     process.once('SIGINT', interrupt)
@@ -369,6 +387,7 @@ export class RunManager {
     } finally {
       process.removeListener('SIGINT', interrupt)
       process.removeListener('SIGTERM', interrupt)
+      this.progressListeners.delete(runId)
       await release()
     }
   }
@@ -465,6 +484,10 @@ export class RunManager {
   async #event(run: OrbitRun, type: string, fields: Record<string, unknown> = {}): Promise<void> {
     const event = await this.store.appendEvent(run.id, type, fields)
     await this.store.save(run)
+    const listener = this.progressListeners.get(run.id)
+    if (listener) {
+      await Promise.resolve(listener({ ...event, ...fields, runId: run.id } as RunProgressEvent)).catch(() => undefined)
+    }
     await this.cloudLogs?.emit(run, { ...event, ...fields })
   }
 }

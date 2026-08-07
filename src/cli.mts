@@ -9,6 +9,7 @@ import { boundedString, publicError } from './util.mjs'
 import type { OrbitRun } from './types.mjs'
 import type { OrbitProviderId } from '../packages/orbit-provider-core/index.mjs'
 import { collectCreateArguments, runWelcomeMenu, welcomeActionArguments } from './welcome.mjs'
+import { runInteractiveSession } from './session.mjs'
 
 type FlagValue = true | string | Array<true | string>
 type Flags = Record<string, FlagValue>
@@ -21,11 +22,13 @@ interface CliDependencies {
   home?: string
   runWelcomeMenu?: typeof runWelcomeMenu
   collectCreateArguments?: typeof collectCreateArguments
+  runInteractiveSession?: typeof runInteractiveSession
 }
 
 const HELP = `Orbit CLI ${VERSION}
 
 Usage:
+  orbit                       Start an interactive game-building session
   orbit auth login|status|logout
   orbit providers list|set|remove|test <provider> [--model <id>] [--key-stdin]
   orbit providers models <provider>
@@ -166,13 +169,16 @@ async function directImage(app: any, flags: Flags): Promise<OrbitRun> {
 }
 
 export async function main(argv: string[] = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<number> {
-  const app = dependencies.app || createApplication()
   const stdin = dependencies.stdin || process.stdin
   const stdout = dependencies.stdout || process.stdout
-  const recovered = await app.store.recoverInterrupted()
-  if (recovered.length) console.error(`Recovered ${recovered.length} interrupted local run(s). Use \`orbit resume <run-id>\`.`)
   let { positionals, flags } = parse(argv)
   let [command, action, target] = positionals
+  if (command === 'version' || flags.version) { console.log(VERSION); return 0 }
+  if ((command === 'help' || flags.help) && argv.length) { console.log(HELP); return 0 }
+
+  const app = dependencies.app || createApplication()
+  const recovered = await app.store.recoverInterrupted()
+  if (recovered.length) console.error(`Recovered ${recovered.length} interrupted local run(s). Use \`orbit resume <run-id>\`.`)
   if (!command && stdin.isTTY && stdout.isTTY) {
     const selected = await (dependencies.runWelcomeMenu || runWelcomeMenu)({
       stdin,
@@ -182,19 +188,21 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       config: await app.config.get(),
     })
     if (!selected) return 0
-    const selectedArguments = selected === 'create'
-      ? await (dependencies.collectCreateArguments || collectCreateArguments)({
-          cwd: dependencies.cwd || process.cwd(),
-          stdin,
-          stdout,
-        })
-      : welcomeActionArguments(selected)
+    if (selected === 'create') {
+      return (dependencies.runInteractiveSession || runInteractiveSession)({
+        app,
+        cwd: dependencies.cwd || process.cwd(),
+        home: dependencies.home || process.env.HOME,
+        stdin,
+        stdout,
+      })
+    }
+    const selectedArguments = welcomeActionArguments(selected)
     if (!selectedArguments) return 0
     argv = selectedArguments
     ;({ positionals, flags } = parse(argv))
     ;[command, action, target] = positionals
   }
-  if (command === 'version' || flags.version) { console.log(VERSION); return 0 }
   if (!command || command === 'help' || flags.help) { console.log(HELP); return 0 }
 
   if (command === 'auth') {
