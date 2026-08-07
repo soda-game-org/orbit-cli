@@ -6,7 +6,7 @@ export const WELCOME_ACTIONS = Object.freeze([
   { id: 'create', label: 'Create a game', detail: 'Describe it, then let Orbit build and validate it' },
   { id: 'web', label: 'Open Web CLI', detail: 'Use the local browser interface' },
   { id: 'runs', label: 'View local runs', detail: 'Find a checkpoint to resume' },
-  { id: 'auth', label: 'Sign in to Orbit', detail: 'Use Orbit Cloud with your account' },
+  { id: 'account', label: 'Account & Cade', detail: 'Sign in, check balance, or open billing' },
   { id: 'providers', label: 'List providers', detail: 'See available and configured model providers' },
   { id: 'doctor', label: 'Run doctor', detail: 'Check this installation and account status' },
   { id: 'help', label: 'Show all commands', detail: 'Print the complete CLI reference' },
@@ -27,6 +27,7 @@ interface WelcomeScreenOptions {
   selectedIndex?: number
   columns?: number
   color?: boolean
+  account?: { signedIn?: boolean; email?: string | null; cadeBalance?: number | null; cadeBalanceState?: string }
 }
 
 type AskQuestion = (message: string) => string | undefined | Promise<string | undefined>
@@ -45,6 +46,7 @@ interface WelcomeMenuOptions {
   home?: string
   config?: WelcomeConfig
   color?: boolean
+  account?: WelcomeScreenOptions['account']
 }
 
 const RESET = '\u001b[0m'
@@ -91,6 +93,7 @@ export function renderWelcomeScreen({
   selectedIndex = 0,
   columns = 88,
   color = true,
+  account,
 }: WelcomeScreenOptions = {}): string {
   const width = clamp(Number(columns) || 88, 68, 100)
   const contentWidth = width - 4
@@ -111,6 +114,8 @@ export function renderWelcomeScreen({
     boxLine(`mode       ${mode}`),
     boxLine(`runtime    ${runtime}`),
     boxLine(`directory  ${directory}`),
+    boxLine(`account    ${account?.signedIn ? clip(account.email || 'signed in', contentWidth - 13) : 'signed out'}`),
+    boxLine(`cade       ${account?.signedIn ? account.cadeBalance == null ? 'unavailable' : `${account.cadeBalance}${account.cadeBalanceState === 'low' ? ' · low' : account.cadeBalanceState === 'exhausted' ? ' · recharge required' : ''}` : 'sign in to view'}`),
     boxLine(),
     paint(bottom, DIM, color),
     '',
@@ -134,7 +139,7 @@ export function renderWelcomeScreen({
 export function welcomeActionArguments(actionId: WelcomeActionId): string[] | null {
   if (actionId === 'web') return ['web']
   if (actionId === 'runs') return ['runs']
-  if (actionId === 'auth') return ['auth', 'login']
+  if (actionId === 'account') return ['account']
   if (actionId === 'providers') return ['providers', 'list']
   if (actionId === 'doctor') return ['doctor']
   if (actionId === 'help') return ['help']
@@ -172,11 +177,12 @@ export async function runWelcomeMenu({
   home = process.env.HOME,
   config = {},
   color = !process.env.NO_COLOR && process.env.TERM !== 'dumb',
+  account,
 }: WelcomeMenuOptions = {}): Promise<WelcomeActionId | null> {
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== 'function') return null
   let selectedIndex = 0
   const render = () => {
-    stdout.write(`\u001b[2J\u001b[H${renderWelcomeScreen({ cwd, home, config, selectedIndex, columns: stdout.columns, color })}\n`)
+    stdout.write(`\u001b[2J\u001b[H${renderWelcomeScreen({ cwd, home, config, account, selectedIndex, columns: stdout.columns, color })}\n`)
   }
 
   stdin.setRawMode(true)

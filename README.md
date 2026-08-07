@@ -96,6 +96,20 @@ Sign in with your Orbit account:
 orbit auth login
 ```
 
+Sign-in opens Orbit's first-party authorization page and then uses the existing
+Google OAuth PKCE flow. Check Cade or open the account and billing pages at any
+time:
+
+```sh
+orbit account
+orbit account open
+orbit account billing
+```
+
+The launcher and Web CLI show the latest available Cade balance. A low balance
+is a warning; an exhausted balance pauses the next Orbit Cloud provider step
+without deleting the local checkpoint. BYOK runs are not blocked by Orbit Cade.
+
 Then describe the game you want to build:
 
 ```sh
@@ -138,7 +152,7 @@ orbit generate \
 
 OpenRouter models are selected by model ID rather than a hard-coded list; the catalog command shows models that advertise tool support. You can still enter another model ID directly. Regional Zhipu and Kimi services use separate endpoints and separate stored keys.
 
-Provider keys are stored in your operating system's credential vault. For automation, use `--key-stdin` instead of putting a key in shell history.
+Provider keys and Orbit sessions are stored in your operating system's credential vault. Large sessions are split across authenticated vault entries on Windows so they remain within Credential Manager's per-entry limit; there is no plaintext fallback. For automation, use `--key-stdin` instead of putting a key in shell history.
 
 ## Images and 3D
 

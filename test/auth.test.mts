@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { get } from 'node:http'
-import { OrbitAuth } from '../src/auth.mjs'
+import { firstPartyAuthorizationUrl, OrbitAuth } from '../src/auth.mjs'
 import { SUPABASE_URL } from '../src/constants.mjs'
 
 class MemoryCredentials {
@@ -72,6 +72,16 @@ test('refuses an authorization URL outside the configured Supabase trust root', 
   const auth = new OrbitAuth(new MemoryCredentials(), { clientFactory: () => fixture.client })
   await assert.rejects(auth.login({ open: () => { opened = true }, timeoutMs: 100 }), /trust root/)
   assert.equal(opened, false)
+})
+
+test('opens the existing PKCE request through the first-party Orbit authorization page', () => {
+  const upstream = `${SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent('http://127.0.0.1:4000/oauth/callback/abcdefghijklmnopqrstuvwxyzABCDEFG_1234567890')}`
+  const wrapped = new URL(firstPartyAuthorizationUrl(upstream))
+  assert.equal(wrapped.origin, 'https://orbit-arcade.com')
+  assert.equal(wrapped.pathname, '/auth/native')
+  const fragment = new URLSearchParams(wrapped.hash.slice(1))
+  assert.equal(fragment.get('authorization'), upstream)
+  assert.equal(fragment.get('surface'), 'cli')
 })
 
 test('times out without persisting a partial session', async () => {

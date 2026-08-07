@@ -56,7 +56,11 @@ export class OrbitApi {
       const text = Buffer.from(await collectStream(response.body, MAX_JSON_RESPONSE)).toString('utf8')
       try { body = text ? JSON.parse(text) : null } catch { body = null }
       if (!response.ok) {
-        throw new OrbitApiError(response.status, body?.code || null, body?.message || `Orbit request failed (${response.status})`, body)
+        const code = body?.code || null
+        const message = response.status === 402 && (code === 'ENGINE_INSUFFICIENT_CADE' || code === 'ENGINE_CADE_CHECKPOINT_EXHAUSTED')
+          ? `${body?.message || 'Orbit Cade is exhausted'} Run \`orbit account billing\` to recharge; your local checkpoint was preserved.`
+          : body?.message || `Orbit request failed (${response.status})`
+        throw new OrbitApiError(response.status, code, message, body)
       }
       return body
     } finally {
@@ -66,6 +70,14 @@ export class OrbitApi {
 
   models(): Promise<any> {
     return this.request('/api/engine/models', { method: 'GET', headers: { 'Cache-Control': 'no-store' } })
+  }
+
+  billingCatalog(locale = 'en', timeoutMs = 5_000): Promise<any> {
+    if (!['en', 'zh'].includes(locale)) throw new TypeError('Billing locale is invalid')
+    return this.request(`/api/billing/engine/catalog?locale=${encodeURIComponent(locale)}`, {
+      method: 'GET',
+      headers: { 'Cache-Control': 'no-store' },
+    }, { timeoutMs })
   }
 
   beginRun({ clientRunId, purpose, modelId, generate3d = false }: { clientRunId: string; purpose: string; modelId: string; generate3d?: boolean }): Promise<any> {

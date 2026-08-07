@@ -14,6 +14,7 @@ import { Asset3DManager } from './asset-3d-manager.mjs'
 import { AssetImageManager } from './asset-image-manager.mjs'
 import { ImageService } from './image.mjs'
 import type { OrbitClientSource } from './types.mjs'
+import { OrbitAccount } from './account.mjs'
 
 export function createApplication({ directories = appDirectories(), fetchImpl = fetch }: { directories?: AppDirectories; fetchImpl?: typeof fetch } = {}) {
   const credentials = new CredentialStore()
@@ -21,6 +22,7 @@ export function createApplication({ directories = appDirectories(), fetchImpl = 
   const config = new ConfigStore({ directories })
   const store = new RunStore({ directories })
   const apiFactory = (source: OrbitClientSource = 'cli') => new OrbitApi(auth, { fetchImpl, source })
+  const account = new OrbitAccount(auth, apiFactory)
   const byok = new ByokProvider(credentials, { fetchImpl })
   const threeD = new ThreeDService({ api: apiFactory('cli'), credentials, fetchImpl })
   const image = new ImageService({ credentials, fetchImpl })
@@ -30,7 +32,7 @@ export function createApplication({ directories = appDirectories(), fetchImpl = 
   const assetImage = new AssetImageManager({ store, config, auth, apiFactory, image, cloudLogs })
   const publishFactory = (api: OrbitApi) => new PublishService(api)
   return {
-    asset3d, assetImage, auth, byok, cloudLogs, config, credentials, directories, image, manager, store, threeD, apiFactory, publishFactory,
-    web: () => new WebCliServer({ asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories }),
+    account, asset3d, assetImage, auth, byok, cloudLogs, config, credentials, directories, image, manager, store, threeD, apiFactory, publishFactory,
+    web: () => new WebCliServer({ account, asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories }),
   }
 }

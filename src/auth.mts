@@ -2,7 +2,7 @@ import { createClient, type Session, type SupportedStorage } from '@supabase/sup
 import { randomBytes } from 'node:crypto'
 import { createServer, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from './constants.mjs'
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, WEB_ORIGIN } from './constants.mjs'
 import { openExternal } from './util.mjs'
 import type { CredentialStore } from './credentials.mjs'
 
@@ -129,7 +129,7 @@ export class OrbitAuth {
         || authorizationUrl.pathname !== '/auth/v1/authorize' || authorizationUrl.username || authorizationUrl.password) {
         throw new Error('Refusing an OAuth URL outside the Orbit trust root')
       }
-      await open(authorizationUrl.toString())
+      await open(firstPartyAuthorizationUrl(authorizationUrl.toString()))
       const result = await callback
       if ('error' in result) throw result.error
       try {
@@ -202,6 +202,12 @@ export class OrbitAuth {
       user: { id: session.user?.id, email: session.user?.email || null },
     }))
   }
+}
+
+export function firstPartyAuthorizationUrl(authorizationUrl: string): string {
+  const url = new URL('/auth/native', WEB_ORIGIN)
+  url.hash = new URLSearchParams({ authorization: authorizationUrl, surface: 'cli' }).toString()
+  return url.toString()
 }
 
 function safeSession(session: Session): { userId: string | null; email: string | null; expiresAt: number | null } {

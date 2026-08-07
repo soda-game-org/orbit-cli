@@ -25,7 +25,8 @@ test('welcome screen shows the installed state and real launcher actions', () =>
   assert.match(screen, /directory\s+~\/code\/orbit-game/)
   assert.match(screen, /› Create a game/)
   assert.match(screen, /Open Web CLI/)
-  assert.match(screen, /Sign in to Orbit/)
+  assert.match(screen, /Account & Cade/)
+  assert.match(screen, /cade\s+sign in to view/)
   assert.match(screen, /List providers/)
   assert.match(screen, /↑↓ navigate/)
   assert.doesNotMatch(screen, /\u001b\[/)
@@ -34,7 +35,7 @@ test('welcome screen shows the installed state and real launcher actions', () =>
 test('welcome action arguments invoke existing CLI commands', () => {
   assert.deepEqual(welcomeActionArguments('web'), ['web'])
   assert.deepEqual(welcomeActionArguments('runs'), ['runs'])
-  assert.deepEqual(welcomeActionArguments('auth'), ['auth', 'login'])
+  assert.deepEqual(welcomeActionArguments('account'), ['account'])
   assert.deepEqual(welcomeActionArguments('providers'), ['providers', 'list'])
   assert.deepEqual(welcomeActionArguments('doctor'), ['doctor'])
   assert.deepEqual(welcomeActionArguments('help'), ['help'])

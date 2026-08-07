@@ -96,6 +96,19 @@ orbit
 orbit auth login
 ```
 
+登录会先打开 Orbit 自有授权页面，再沿用现有的 Google OAuth PKCE
+流程。随时可以查看 Cade，或打开账号中心与充值页面：
+
+```sh
+orbit account
+orbit account open
+orbit account billing
+```
+
+启动菜单和 Web CLI 会显示最新可用的 Cade 余额。低余额只做预警；余额耗尽时，
+下一次 Orbit Cloud 模型调用会暂停，但本地检查点不会被删除。BYOK 不受 Orbit
+Cade 限制。
+
 然后描述你想制作的游戏：
 
 ```sh
@@ -138,7 +151,7 @@ orbit generate \
 
 OpenRouter 按模型 ID 选择模型，不使用写死的模型列表；目录命令会列出声明支持工具调用的模型，也可以直接填写其他模型 ID。智谱和 Kimi 的中国区、全球区使用不同接口和不同的本地密钥槽。
 
-服务商密钥会保存在操作系统的凭据保险库中。自动化环境请使用 `--key-stdin`，不要将密钥直接写入 Shell 历史记录。
+服务商密钥和 Orbit 会话都会保存在操作系统的凭据保险库中。Windows 上的大型会话会拆分到多个受保护的 Credential Manager 条目，避免超过单条凭据容量限制；不会回退到明文文件。自动化环境请使用 `--key-stdin`，不要将密钥直接写入 Shell 历史记录。
 
 ## 图片和 3D
 

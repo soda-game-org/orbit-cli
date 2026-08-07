@@ -8,7 +8,7 @@ if (hash.get('token') && hash.get('csrf')) {
 history.replaceState(null, '', `${location.pathname}${location.search}`)
 
 const $ = (id: string): any => document.getElementById(id)
-let state: any = { runs: [], auth: { signedIn: false }, config: {}, providers: [], defaultWorkspace: '' }
+let state: any = { runs: [], auth: { signedIn: false }, account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }, config: {}, providers: [], defaultWorkspace: '' }
 let selectedWorkspace = ''
 let selectedRunId = ''
 let activePreviewRunId = ''
@@ -45,8 +45,14 @@ function status(message: string, error = false): void {
 
 function authView(): void {
   $('session-light').classList.toggle('online', state.auth.signedIn)
-  $('session-label').textContent = state.auth.signedIn ? state.auth.email || 'Orbit account' : 'Signed out'
+  const cade = state.account?.cadeBalance
+  $('session-label').textContent = state.auth.signedIn
+    ? `${state.auth.email || 'Orbit account'}${cade == null ? '' : ` · ${cade} Cade`}`
+    : 'Signed out'
   $('auth-button').textContent = state.auth.signedIn ? 'Sign out' : 'Sign in'
+  $('account-button').hidden = !state.auth.signedIn
+  $('billing-button').hidden = !state.auth.signedIn
+  $('billing-button').classList.toggle('warning', ['low', 'exhausted'].includes(state.account?.cadeBalanceState))
 }
 
 function configured(providerId: string): boolean {
@@ -557,6 +563,18 @@ $('auth-button').addEventListener('click', async () => {
     else await ensureOrbitAuth()
     await refresh()
     status(state.auth.signedIn ? 'Signed in' : 'Signed out')
+  } catch (error) { status(errorMessage(error), true) }
+})
+$('account-button').addEventListener('click', async () => {
+  try {
+    await api('/api/account/open', { method: 'POST', body: '{}' })
+    status('Opened Orbit account center')
+  } catch (error) { status(errorMessage(error), true) }
+})
+$('billing-button').addEventListener('click', async () => {
+  try {
+    await api('/api/account/billing', { method: 'POST', body: '{}' })
+    status('Opened Orbit billing')
   } catch (error) { status(errorMessage(error), true) }
 })
 $('save-key').addEventListener('click', async () => {

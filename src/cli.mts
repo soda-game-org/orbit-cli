@@ -32,6 +32,7 @@ const HELP = `Orbit CLI ${VERSION}
 Usage:
   orbit                       Start an interactive game-building session
   orbit auth login|status|logout
+  orbit account [open|billing]
   orbit providers list|set|remove|test <provider> [--model <id>] [--key-stdin]
   orbit providers models <provider>
   orbit generate --prompt <text> [--workspace <absolute>] [--mode orbit|byok]
@@ -188,6 +189,9 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       cwd: dependencies.cwd || process.cwd(),
       home: dependencies.home || process.env.HOME,
       config: await app.config.get(),
+      // Account metadata enriches the launcher, but it must not make local
+      // startup feel network-bound when Orbit is offline.
+      account: app.account?.status ? await app.account.status({ timeoutMs: 1_500 }) : undefined,
     })
     if (!selected) return 0
     if (selected === 'create') {
@@ -212,6 +216,18 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     else if (action === 'status') console.log(JSON.stringify(await app.auth.status(), null, 2))
     else if (action === 'logout') { await app.auth.logout(); console.log('Signed out.') }
     else throw new Error('Usage: orbit auth login|status|logout')
+    return 0
+  }
+  if (command === 'account') {
+    if (action === 'open') { app.account.openProfile(); console.log('Opened Orbit account center.'); return 0 }
+    if (action === 'billing') { await app.account.openBilling('cli'); console.log('Opened Orbit billing.'); return 0 }
+    if (action) throw new Error('Usage: orbit account [open|billing]')
+    const account = await app.account.status()
+    console.log(JSON.stringify({
+      ...account,
+      ...(account.cadeBalanceState === 'low' ? { warning: 'Cade is running low. Use `orbit account billing` to add more.' } : {}),
+      ...(account.cadeBalanceState === 'exhausted' ? { warning: 'Cade is exhausted. Recharge before the next Orbit Cloud call.' } : {}),
+    }, null, 2))
     return 0
   }
   if (command === 'providers') {
@@ -335,7 +351,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
   }
   if (command === 'doctor') {
     const config = await app.config.get()
-    console.log(JSON.stringify({ version: VERSION, node: process.version, platform: process.platform, arch: process.arch, auth: await app.auth.status(), config, recoveredRuns: recovered.map((run: OrbitRun) => run.id) }, null, 2))
+    console.log(JSON.stringify({ version: VERSION, node: process.version, platform: process.platform, arch: process.arch, account: await app.account.status(), config, recoveredRuns: recovered.map((run: OrbitRun) => run.id) }, null, 2))
     return 0
   }
   throw new Error(`Unknown command: ${command}\n\n${HELP}`)

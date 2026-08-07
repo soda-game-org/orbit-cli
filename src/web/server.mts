@@ -138,6 +138,7 @@ export class WebCliServer {
   readonly asset3d: any
   readonly assetImage: any
   readonly manager: any
+  readonly account: any
   readonly auth: any
   readonly byok: any
   readonly config: any
@@ -156,8 +157,8 @@ export class WebCliServer {
   previewHost = ''
   previewOrigin = ''
 
-  constructor({ asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }: Record<string, any> & { directories?: AppDirectories }) {
-    Object.assign(this, { asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory })
+  constructor({ account, asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory, directories = appDirectories() }: Record<string, any> & { directories?: AppDirectories }) {
+    Object.assign(this, { account, asset3d, assetImage, manager, auth, byok, config, credentials, store, apiFactory, publishFactory })
     this.directories = directories
     this.token = randomBytes(32).toString('base64url')
     this.csrf = randomBytes(32).toString('base64url')
@@ -238,6 +239,9 @@ export class WebCliServer {
       return send(response, 200, {
         config: await this.config.get(),
         auth: await this.auth.status(),
+        account: this.account?.status
+          ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
+          : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
         runs,
         providers,
         defaultWorkspace: path.join(process.cwd(), 'orbit-game'),
@@ -245,6 +249,14 @@ export class WebCliServer {
     }
     if (request.method === 'POST' && url.pathname === '/api/auth/login') return send(response, 200, await this.auth.login())
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') { await this.auth.logout(); return send(response, 200, { ok: true }) }
+    if (request.method === 'POST' && url.pathname === '/api/account/open') {
+      if (!this.account?.openProfile) throw new Error('Orbit account center is unavailable')
+      this.account.openProfile(); return send(response, 200, { ok: true })
+    }
+    if (request.method === 'POST' && url.pathname === '/api/account/billing') {
+      if (!this.account?.openBilling) throw new Error('Orbit billing is unavailable')
+      await this.account.openBilling('cli_gui'); return send(response, 200, { ok: true })
+    }
     if (request.method === 'POST' && url.pathname === '/api/config') return send(response, 200, await this.config.update(await bodyJson(request)))
     if (request.method === 'GET' && url.pathname === '/api/provider/models') {
       const provider = url.searchParams.get('provider')
