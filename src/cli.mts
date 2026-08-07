@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import { createApplication } from './app.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
@@ -339,6 +341,15 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
   throw new Error(`Unknown command: ${command}\n\n${HELP}`)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isMainEntrypoint(): boolean {
+  if (!process.argv[1]) return false
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isMainEntrypoint()) {
   main().then((code) => { process.exitCode = code }).catch((error) => { console.error(`orbit: ${publicError(error)}`); process.exitCode = 1 })
 }

@@ -22,6 +22,7 @@ const findings: string[] = []
 const AUDIT_SCRIPT = 'scripts/audit-public.mts'
 const PUBLIC_GENERIC_SKILL = 'skills/generic-html-game/SKILL.md'
 const PUBLIC_README_ASSET = 'assets/readme/orbit-cli-hero.jpg'
+const PUBLIC_CLI_BIN = 'dist/src/cli.mjs'
 const PACK_ALLOWED_EXACT = new Set([
   'LICENSE',
   'NOTICE.md',
@@ -296,6 +297,7 @@ async function auditPackManifest(manifest: any, packageJson: any): Promise<numbe
     }
     scanText(relative, text)
   }
+  if (!seen.has(PUBLIC_CLI_BIN)) findings.push('npm pack is missing the Orbit CLI executable')
   return manifest.files.length
 }
 
@@ -305,6 +307,9 @@ for (const entry of await fs.readdir(root)) {
 selfCheckPrivateBoundaryPolicy()
 const packageJson = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
 if (Object.keys(packageJson.dependencies || {}).some((name) => name.startsWith('@orbit/'))) findings.push('Private Orbit packages cannot be dependencies')
+if (packageJson.bin?.orbit !== PUBLIC_CLI_BIN) findings.push(`package.json bin.orbit must be ${PUBLIC_CLI_BIN}`)
+const cliBin = await fs.readFile(path.join(root, PUBLIC_CLI_BIN), 'utf8').catch(() => '')
+if (!cliBin.startsWith('#!/usr/bin/env node\n')) findings.push('Orbit CLI executable is missing its Node.js shebang')
 await visit(root)
 await auditReachableGitHistory()
 if (privateSkillFiles.length) findings.push(`Only the generic skill may ship: ${privateSkillFiles.join(', ')}`)

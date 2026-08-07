@@ -21,7 +21,7 @@
   ],
   "private": false,
   "bin": {
-    "orbit": "./dist/src/cli.mjs"
+    "orbit": "dist/src/cli.mjs"
   },
   "exports": {
     "./provider-core": {
