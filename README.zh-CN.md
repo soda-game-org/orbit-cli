@@ -88,6 +88,21 @@ orbit
 
 输入 `/help` 查看所有会话命令；Tab 可补全斜杠命令，方向键可找回历史输入，Agent 忙碌时继续输入的需求会排到下一轮，`/resume` 默认继续最近的可恢复检查点，Ctrl+C 只中断当前运行、不会丢掉整个会话。`orbit generate` 等脚本化命令继续保留稳定的 JSON 输出，兼容自动化调用。
 
+### Project 与 Session
+
+Orbit 把一个本地工作区视为一个 **Project**。同一 Project 可以包含多个相互独立的 **Session**（内部对应 Thread）；每次输入是一轮 **Turn**，每次执行或重试都会形成可恢复的 **Run/Attempt**。新建 Session 会继续使用同一套项目文件，但拥有独立的对话上下文；新建 Project 才会选择另一个工作区。
+
+在终端会话中可使用：
+
+```text
+/sessions
+/session new 尝试另一种玩法方向
+/session <id 或唯一前缀>
+/new ./another-game
+```
+
+在本地 Web CLI 中，**New chat** 会在当前 Project 内新建 Session，**New project** 才会选择独立工作区。已有游戏即使进入一个空的新 Session，第一轮仍然按修改现有 Project 处理，不会重新创建或覆盖工作区。旧版 `runs/<id>/checkpoint.json` 和 `events.jsonl` 会留在原位置并按需建立索引；升级不会搬移、删除或重写旧运行历史。
+
 ### 创建第一个游戏
 
 登录 Orbit 账号：
@@ -198,7 +213,7 @@ orbit runs
 orbit resume <run-id>
 ```
 
-交互会话中可用 `/runs` 查看最近检查点、用 `/resume [run-id]` 继续运行，并通过 `/details [run-id]` 按需展开已保存的计划和工具时间线；平时完成后只显示最终总结。
+交互会话中可用 `/sessions` 查看当前 Project 的各个对话历史、用 `/session <id>` 切换，使用 `/runs` 查看最近检查点、用 `/resume [run-id]` 继续运行，并通过 `/details [run-id]` 按需展开已保存的计划和工具时间线；平时完成后只显示最终总结。
 
 游戏完成后，可以发布到 [Orbit Arcade](https://orbit-arcade.com)：
 

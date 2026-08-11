@@ -5,7 +5,9 @@
  * E2B imports. Those capabilities belong to host adapters.
  */
 
-export const ORBIT_PRO_AGENT_CORE_VERSION = 'orbit-pro-agent-core/0.4.1'
+export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.0'
+/** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
+export const ORBIT_PRO_AGENT_CORE_VERSION = ORBIT_AGENT_CORE_VERSION
 
 /**
  * Portable execution policy. Hosts may provide capabilities, credentials and
@@ -175,6 +177,741 @@ function executionCount(value) {
 
 function executionKey(value) {
   return String(value || '').trim().slice(0, 1_200)
+}
+
+export const ORBIT_AGENT_PROJECT_SCHEMA = 'orbit.agent-project.v1'
+export const ORBIT_AGENT_THREAD_SCHEMA = 'orbit.agent-thread.v1'
+export const ORBIT_AGENT_TURN_SCHEMA = 'orbit.agent-turn.v1'
+export const ORBIT_AGENT_INPUT_ITEM_SCHEMA = 'orbit.agent-input-item.v1'
+export const ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA = 'orbit.agent-media-observation.v1'
+export const ORBIT_AGENT_MEDIA_CACHE_SCHEMA = 'orbit.agent-media-cache.v1'
+export const ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA = 'orbit.agent-provider-capability.v1'
+export const ORBIT_AGENT_INPUT_PROJECTION_SCHEMA = 'orbit.agent-input-projection.v1'
+
+function agentPortableText(value, maximum = 32_000) {
+  return typeof value === 'string' ? value.trim().slice(0, maximum) : ''
+}
+
+function agentPortableId(value, fallback = '') {
+  return agentPortableText(value, 240) || fallback
+}
+
+function agentStableHash(value) {
+  let source = ''
+  try {
+    source = typeof value === 'string' ? value : (JSON.stringify(value ?? null) || String(value ?? ''))
+  } catch {
+    source = Object.prototype.toString.call(value)
+  }
+  let hash = 2166136261
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+function agentFallbackId(prefix, value, index = 0) {
+  return `${prefix}-${Math.max(1, executionCount(index) + 1)}-${agentStableHash(value)}`
+}
+
+function agentPortableMetadata(value) {
+  const source = executionObject(value)
+  const output = {}
+  for (const [key, entry] of Object.entries(source).slice(0, 64)) {
+    const name = agentPortableText(key, 120)
+    if (!name || entry === undefined || typeof entry === 'function' || typeof entry === 'symbol' || typeof entry === 'bigint') continue
+    try {
+      output[name] = JSON.parse(JSON.stringify(entry))
+    } catch {}
+  }
+  return output
+}
+
+function agentOptionalTimestamp(value) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : undefined
+}
+
+function agentOptionalPositiveInteger(value) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number >= 0 ? number : undefined
+}
+
+function agentMediaKind(value, fallback = 'other') {
+  return ['image', 'document', 'audio', 'video', 'archive', 'other'].includes(value) ? value : fallback
+}
+
+function agentInputItemType(value) {
+  if (value === 'local_image' || value === 'local-image') return 'localImage'
+  if (value === 'reference') return 'ref'
+  if (['text', 'image', 'localImage', 'attachment', 'ref'].includes(value)) return value
+  if (value === 'input_text') return 'text'
+  if (value === 'image_url' || value === 'input_image') return 'image'
+  return ''
+}
+
+function agentImageUrl(source) {
+  if (typeof source.url === 'string') return source.url.trim()
+  if (typeof source.image_url === 'string') return source.image_url.trim()
+  if (typeof source.image_url?.url === 'string') return source.image_url.url.trim()
+  if (typeof source.source?.url === 'string') return source.source.url.trim()
+  if (typeof source.source?.value === 'string' && ['url', 'data_url'].includes(source.source.type)) return source.source.value.trim()
+  return ''
+}
+
+function agentPrivateNetworkHostname(hostname) {
+  const value = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (!value || value === 'localhost' || value.endsWith('.localhost') || value === '::' || value === '::1' || value.startsWith('::ffff:')) return true
+  const embeddedIpv4 = /(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(value)?.[1]
+  if (embeddedIpv4 && embeddedIpv4 !== value && agentPrivateNetworkHostname(embeddedIpv4)) return true
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value)
+  if (ipv4) {
+    const octets = ipv4.slice(1).map(Number)
+    if (octets.some((part) => part > 255)) return true
+    if (octets[0] === 0 || octets[0] === 10 || octets[0] === 127 || octets[0] >= 224) return true
+    if (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) return true
+    if (octets[0] === 169 && octets[1] === 254) return true
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true
+    if (octets[0] === 192 && octets[1] === 0 && [0, 2].includes(octets[2])) return true
+    if (octets[0] === 192 && octets[1] === 88 && octets[2] === 99) return true
+    if (octets[0] === 192 && octets[1] === 168) return true
+    if (octets[0] === 198 && [18, 19].includes(octets[1])) return true
+    if (octets[0] === 198 && octets[1] === 51 && octets[2] === 100) return true
+    if (octets[0] === 203 && octets[1] === 0 && octets[2] === 113) return true
+  }
+  return value.startsWith('fc') || value.startsWith('fd')
+    || value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb')
+    || value.startsWith('ff') || value.startsWith('2001:db8')
+}
+
+function agentSafeImageUrl(value) {
+  const source = typeof value === 'string' ? value.trim() : ''
+  if (!source) return ''
+  if (source.startsWith('data:')) {
+    if (source.length > 12 * 1024 * 1024) return ''
+    return /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=\r\n]+$/i.test(source) ? source : ''
+  }
+  if (source.length > 8_192) return ''
+  try {
+    const url = new URL(source)
+    if (url.protocol !== 'https:' || url.username || url.password || agentPrivateNetworkHostname(url.hostname)) return ''
+    return url.href
+  } catch {
+    return ''
+  }
+}
+
+function agentSafeInlineImageUrl(value) {
+  const url = agentSafeImageUrl(value)
+  return url.startsWith('data:image/') ? url : ''
+}
+
+function agentLocalImagePath(source) {
+  if (typeof source.path === 'string') return source.path.trim()
+  if (typeof source.localPath === 'string') return source.localPath.trim()
+  if (typeof source.local_path === 'string') return source.local_path.trim()
+  if (typeof source.source?.path === 'string') return source.source.path.trim()
+  if (typeof source.source?.value === 'string' && source.source.type === 'local_path') return source.source.value.trim()
+  return ''
+}
+
+/** Normalize one portable turn input without reading files or fetching URLs. */
+export function normalizeAgentInputItem(raw, options = {}) {
+  const input = typeof raw === 'string' ? { type: 'text', text: raw } : executionObject(raw)
+  const type = agentInputItemType(input.type || (typeof input.text === 'string' ? 'text' : ''))
+  if (!type) return null
+  const index = executionCount(options.index)
+  const fallbackId = agentPortableId(options.fallbackId)
+    || agentFallbackId('input', input, index)
+  const id = agentPortableId(input.id || input.itemId || input.item_id, fallbackId)
+  const base = {
+    schema: ORBIT_AGENT_INPUT_ITEM_SCHEMA,
+    id,
+    type,
+    ...(agentOptionalTimestamp(input.createdAt || input.created_at) ? { createdAt: agentOptionalTimestamp(input.createdAt || input.created_at) } : {}),
+    ...(Object.keys(agentPortableMetadata(input.metadata)).length ? { metadata: agentPortableMetadata(input.metadata) } : {}),
+  }
+
+  if (type === 'text') {
+    const text = typeof input.text === 'string'
+      ? input.text
+      : typeof input.content === 'string'
+        ? input.content
+        : ''
+    if (!text.trim()) return null
+    return { ...base, type: 'text', text }
+  }
+
+  const mediaId = agentPortableId(input.mediaId || input.media_id)
+  const attachmentId = agentPortableId(input.attachmentId || input.attachment_id)
+  const mediaType = agentPortableText(input.mediaType || input.media_type || input.mimeType || input.mime_type, 240)
+  const detail = ['auto', 'low', 'high'].includes(input.detail) ? input.detail : undefined
+
+  if (type === 'image') {
+    // Canonical `image` inputs are portable inline data URLs. A remote Web
+    // asset is an attachment whose host-validated URL belongs in MediaCache.
+    const url = agentSafeInlineImageUrl(agentImageUrl(input))
+    if (!url) return null
+    return {
+      ...base,
+      type: 'image',
+      url,
+      ...(mediaId ? { mediaId } : {}),
+      ...(attachmentId ? { attachmentId } : {}),
+      ...(mediaType ? { mediaType } : {}),
+      ...(detail ? { detail } : {}),
+    }
+  }
+
+  if (type === 'localImage') {
+    const path = agentLocalImagePath(input)
+    if (!path) return null
+    return {
+      ...base,
+      type: 'localImage',
+      path: path.slice(0, 8_192),
+      mediaId: mediaId || id,
+      ...(attachmentId ? { attachmentId } : {}),
+      ...(mediaType ? { mediaType } : {}),
+      ...(detail ? { detail } : {}),
+    }
+  }
+
+  if (type === 'attachment') {
+    const source = executionObject(input.attachment)
+    const normalizedAttachmentId = agentPortableId(
+      source.id || source.attachmentId || source.attachment_id || attachmentId || input.ref,
+      id,
+    )
+    const kind = agentMediaKind(source.kind || input.kind, mediaType.startsWith('image/') ? 'image' : 'other')
+    const name = agentPortableText(source.name || input.name || input.filename, 500)
+    const normalizedMediaType = agentPortableText(source.mediaType || source.media_type || source.mimeType || source.mime_type || mediaType, 240)
+    const sizeBytes = agentOptionalPositiveInteger(source.sizeBytes ?? source.size_bytes ?? input.sizeBytes ?? input.size_bytes)
+    const digest = agentPortableText(source.digest || input.digest, 300)
+    const sourceRef = agentPortableText(source.sourceRef || source.source_ref || input.sourceRef || input.source_ref || input.path || input.url, 8_192)
+    const observationId = agentPortableId(input.observationId || input.observation_id)
+    return {
+      ...base,
+      type: 'attachment',
+      attachment: {
+        id: normalizedAttachmentId,
+        kind,
+        ...(name ? { name } : {}),
+        ...(normalizedMediaType ? { mediaType: normalizedMediaType } : {}),
+        ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+        ...(digest ? { digest } : {}),
+        ...(sourceRef ? { sourceRef } : {}),
+      },
+      ...(observationId ? { observationId } : {}),
+    }
+  }
+
+  const source = executionObject(input.ref || input.reference)
+  const targetId = agentPortableId(
+    source.targetId || source.target_id || source.attachmentId || source.attachment_id
+      || input.targetId || input.target_id || attachmentId || input.mediaId || input.media_id,
+  )
+  if (!targetId) return null
+  const kind = ['attachment', 'media', 'turn', 'project', 'external'].includes(source.kind || input.kind)
+    ? (source.kind || input.kind)
+    : (attachmentId || source.attachmentId || source.attachment_id ? 'attachment' : 'external')
+  const refId = agentPortableId(source.id || input.refId || input.ref_id, id)
+  const label = agentPortableText(source.label || input.label || input.name, 500)
+  const observationId = agentPortableId(input.observationId || input.observation_id)
+  return {
+    ...base,
+    type: 'ref',
+    ref: { id: refId, kind, targetId, ...(label ? { label } : {}) },
+    ...(observationId ? { observationId } : {}),
+  }
+}
+
+export function normalizeAgentInputItems(raw, options = {}) {
+  const source = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw]
+  const items = []
+  const ids = new Set()
+  for (const [index, value] of source.entries()) {
+    const item = normalizeAgentInputItem(value, { ...options, index })
+    if (!item) continue
+    let id = item.id
+    let suffix = 2
+    while (ids.has(id)) id = `${item.id}-${suffix++}`.slice(0, 240)
+    ids.add(id)
+    items.push(id === item.id ? item : { ...item, id })
+  }
+  return items
+}
+
+function normalizeAgentMediaFact(raw, index) {
+  const source = typeof raw === 'string' ? { text: raw } : executionObject(raw)
+  const text = agentPortableText(source.text || source.value || source.summary, 2_000)
+  if (!text) return null
+  const id = agentPortableId(source.id, agentFallbackId('fact', source, index))
+  const label = agentPortableText(source.label || source.kind, 160)
+  const confidenceNumber = Number(source.confidence)
+  const confidence = Number.isFinite(confidenceNumber)
+    ? Math.max(0, Math.min(1, confidenceNumber))
+    : undefined
+  const sourceRef = agentPortableText(source.sourceRef || source.source_ref || source.location, 500)
+  return {
+    id,
+    text,
+    ...(label ? { label } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(sourceRef ? { sourceRef } : {}),
+  }
+}
+
+/** Normalize a bounded semantic observation for one attachment or media item. */
+export function normalizeAgentMediaObservation(raw, options = {}) {
+  const source = typeof raw === 'string' ? { summary: raw } : executionObject(raw)
+  const attachmentId = agentPortableId(source.attachmentId || source.attachment_id || options.attachmentId)
+  const mediaId = agentPortableId(source.mediaId || source.media_id || options.mediaId)
+  if (!attachmentId && !mediaId) return null
+  const id = agentPortableId(
+    source.id || source.observationId || source.observation_id,
+    agentFallbackId('observation', { attachmentId, mediaId }, 0),
+  )
+  const rawStatus = source.status
+  const status = ['ready', 'partial', 'unavailable', 'failed'].includes(rawStatus)
+    ? rawStatus
+    : (source.summary || source.facts ? 'ready' : 'unavailable')
+  const summary = agentPortableText(source.summary || source.description, 16_000)
+  const facts = (Array.isArray(source.facts) ? source.facts : [])
+    .slice(0, 64)
+    .map(normalizeAgentMediaFact)
+    .filter(Boolean)
+  const kind = agentMediaKind(source.kind, 'other')
+  const mediaType = agentPortableText(source.mediaType || source.media_type || source.mimeType || source.mime_type, 240)
+  const digest = agentPortableText(source.digest, 300)
+  const createdAt = agentOptionalTimestamp(source.createdAt || source.created_at)
+  return {
+    schema: ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA,
+    id,
+    ...(attachmentId ? { attachmentId } : {}),
+    ...(mediaId ? { mediaId } : {}),
+    kind,
+    status,
+    summary,
+    facts,
+    ...(mediaType ? { mediaType } : {}),
+    ...(digest ? { digest } : {}),
+    ...(createdAt ? { createdAt } : {}),
+  }
+}
+
+function normalizeAgentMediaCacheEntry(raw, fallbackKey = '') {
+  const source = executionObject(raw)
+  const mediaId = agentPortableId(source.mediaId || source.media_id)
+  const attachmentId = agentPortableId(source.attachmentId || source.attachment_id)
+  const sourceItemId = agentPortableId(source.sourceItemId || source.source_item_id)
+  const key = agentPortableId(source.key, fallbackKey || mediaId || attachmentId || sourceItemId)
+  if (!key || (!mediaId && !attachmentId && !sourceItemId)) return null
+  const rawResolved = executionObject(source.resolved)
+  let resolvedType = rawResolved.type
+  let resolvedValue = typeof rawResolved.value === 'string' ? rawResolved.value.trim() : ''
+  if (!resolvedValue && typeof source.url === 'string') {
+    resolvedValue = source.url.trim()
+    resolvedType = resolvedValue.startsWith('data:') ? 'data_url' : 'url'
+  } else if (!resolvedValue && typeof source.dataUrl === 'string') {
+    resolvedValue = source.dataUrl.trim()
+    resolvedType = 'data_url'
+  } else if (!resolvedValue && typeof source.providerFileId === 'string') {
+    resolvedValue = source.providerFileId.trim()
+    resolvedType = 'provider_file'
+  } else if (!resolvedValue && typeof source.hostRef === 'string') {
+    resolvedValue = source.hostRef.trim()
+    resolvedType = 'host_ref'
+  }
+  const resolved = resolvedValue && ['url', 'data_url', 'provider_file', 'host_ref'].includes(resolvedType)
+    ? ['url', 'data_url'].includes(resolvedType)
+      ? (agentSafeImageUrl(resolvedValue) ? { type: resolvedType, value: agentSafeImageUrl(resolvedValue) } : null)
+      : { type: resolvedType, value: resolvedValue.slice(0, 8_192) }
+    : null
+  let status = ['ready', 'missing', 'failed'].includes(source.status)
+    ? source.status
+    : (resolved ? 'ready' : 'missing')
+  if (status === 'ready' && !resolved) status = 'failed'
+  const observationId = agentPortableId(source.observationId || source.observation_id)
+  const mediaType = agentPortableText(source.mediaType || source.media_type || source.mimeType || source.mime_type, 240)
+  const digest = agentPortableText(source.digest, 300)
+  const updatedAt = agentOptionalTimestamp(source.updatedAt || source.updated_at)
+  return {
+    key,
+    ...(mediaId ? { mediaId } : {}),
+    ...(attachmentId ? { attachmentId } : {}),
+    ...(sourceItemId ? { sourceItemId } : {}),
+    status,
+    resolved,
+    ...(observationId ? { observationId } : {}),
+    ...(mediaType ? { mediaType } : {}),
+    ...(digest ? { digest } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+  }
+}
+
+export function normalizeAgentMediaCache(raw) {
+  const source = Array.isArray(raw) ? { entries: raw } : executionObject(raw)
+  const rawEntries = Array.isArray(source.entries)
+    ? source.entries.map((entry) => [null, entry])
+    : Object.entries(executionObject(source.entries))
+  const entries = []
+  const keys = new Set()
+  for (const [fallbackKey, value] of rawEntries.slice(0, 2_000)) {
+    const entry = normalizeAgentMediaCacheEntry(value, fallbackKey || '')
+    if (!entry || keys.has(entry.key)) continue
+    keys.add(entry.key)
+    entries.push(entry)
+  }
+  return { schema: ORBIT_AGENT_MEDIA_CACHE_SCHEMA, entries }
+}
+
+export function normalizeAgentProject(raw) {
+  const source = executionObject(raw)
+  const id = agentPortableId(source.id || source.projectId || source.project_id)
+  if (!id) return null
+  const name = agentPortableText(source.name || source.title, 500)
+  const rootRef = agentPortableText(source.rootRef || source.root_ref || source.workspaceRef || source.workspace_ref || source.rootUri || source.root_uri, 8_192)
+  const createdAt = agentOptionalTimestamp(source.createdAt || source.created_at)
+  const updatedAt = agentOptionalTimestamp(source.updatedAt || source.updated_at)
+  const threadIds = [...new Set((Array.isArray(source.threadIds || source.thread_ids) ? (source.threadIds || source.thread_ids) : [])
+    .map((value) => agentPortableId(value)).filter(Boolean))].slice(0, 10_000)
+  const metadata = agentPortableMetadata(source.metadata)
+  return {
+    schema: ORBIT_AGENT_PROJECT_SCHEMA,
+    id,
+    ...(name ? { name } : {}),
+    ...(rootRef ? { rootRef } : {}),
+    threadIds,
+    ...(createdAt ? { createdAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
+  }
+}
+
+export function normalizeAgentTurn(raw, options = {}) {
+  const source = executionObject(raw)
+  const threadId = agentPortableId(source.threadId || source.thread_id || source.sessionId || source.session_id || options.threadId)
+  const id = agentPortableId(source.id || source.turnId || source.turn_id)
+  if (!id) return null
+  const inputSource = source.inputItems ?? source.input_items ?? source.input ?? source.items
+    ?? (typeof source.content === 'string' ? [{ type: 'text', text: source.content }] : [])
+  const legacyAttachments = Array.isArray(source.attachments) ? source.attachments.map((attachment) => ({ type: 'attachment', attachment })) : []
+  const inputItems = normalizeAgentInputItems([
+    ...(Array.isArray(inputSource) ? inputSource : inputSource === undefined || inputSource === null ? [] : [inputSource]),
+    ...legacyAttachments,
+  ])
+  const outputSource = source.outputMessages || source.output_messages || source.output || source.messages
+  const outputMessages = (Array.isArray(outputSource) ? outputSource : [])
+    .filter((message) => message && typeof message === 'object' && !Array.isArray(message))
+    .map((message) => ({ ...message }))
+  const state = ['pending', 'in_progress', 'completed', 'failed', 'cancelled', 'interrupted'].includes(source.state || source.status)
+    ? (source.state || source.status)
+    : 'pending'
+  const sequence = agentOptionalPositiveInteger(source.sequence ?? source.index)
+  const createdAt = agentOptionalTimestamp(source.createdAt || source.created_at)
+  const completedAt = agentOptionalTimestamp(source.completedAt || source.completed_at)
+  const metadata = agentPortableMetadata(source.metadata)
+  return {
+    schema: ORBIT_AGENT_TURN_SCHEMA,
+    id,
+    ...(threadId ? { threadId } : {}),
+    ...(sequence !== undefined ? { sequence } : {}),
+    state,
+    inputItems,
+    outputMessages,
+    ...(createdAt ? { createdAt } : {}),
+    ...(completedAt ? { completedAt } : {}),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
+  }
+}
+
+export function normalizeAgentThread(raw) {
+  const source = executionObject(raw)
+  const id = agentPortableId(source.id || source.threadId || source.thread_id || source.sessionId || source.session_id)
+  if (!id) return null
+  const projectId = agentPortableId(source.projectId || source.project_id)
+  const title = agentPortableText(source.title || source.name, 500)
+  const turns = (Array.isArray(source.turns) ? source.turns : [])
+    .slice(0, 100_000)
+    .map((turn) => normalizeAgentTurn(turn, { threadId: id }))
+    .filter(Boolean)
+  const createdAt = agentOptionalTimestamp(source.createdAt || source.created_at)
+  const updatedAt = agentOptionalTimestamp(source.updatedAt || source.updated_at)
+  const metadata = agentPortableMetadata(source.metadata)
+  return {
+    schema: ORBIT_AGENT_THREAD_SCHEMA,
+    id,
+    ...(projectId ? { projectId } : {}),
+    ...(title ? { title } : {}),
+    turns,
+    ...(createdAt ? { createdAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
+  }
+}
+
+/** Session is a compatibility name for the canonical Thread entity. */
+export function normalizeAgentSession(raw) {
+  return normalizeAgentThread(raw)
+}
+
+export function normalizeAgentProviderCapabilities(raw = {}) {
+  const source = executionObject(raw)
+  const vision = source.vision === true || source.supportsVision === true || source.supports_vision === true
+  const requestedInputs = Array.isArray(source.imageInputs || source.image_inputs)
+    ? (source.imageInputs || source.image_inputs)
+    : typeof source.imageInput === 'string'
+      ? [source.imageInput]
+      : []
+  const imageInputs = [...new Set(requestedInputs.filter((value) => ['url', 'data_url', 'provider_file', 'host_ref'].includes(value)))]
+  return {
+    schema: ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA,
+    vision,
+    imageInputs: vision ? imageInputs : [],
+    nativeAttachments: source.nativeAttachments === true || source.native_attachments === true,
+    maxImagesPerTurn: Math.max(0, Math.min(1_000, agentOptionalPositiveInteger(source.maxImagesPerTurn ?? source.max_images_per_turn) ?? (vision ? 32 : 0))),
+  }
+}
+
+function agentObservationIndexes(raw) {
+  const values = Array.isArray(raw) ? raw : Array.isArray(raw?.observations) ? raw.observations : []
+  const byId = new Map()
+  const byAttachment = new Map()
+  const byMedia = new Map()
+  for (const value of values.slice(0, 10_000)) {
+    const observation = normalizeAgentMediaObservation(value)
+    if (!observation) continue
+    byId.set(observation.id, observation)
+    if (observation.attachmentId && !byAttachment.has(observation.attachmentId)) byAttachment.set(observation.attachmentId, observation)
+    if (observation.mediaId && !byMedia.has(observation.mediaId)) byMedia.set(observation.mediaId, observation)
+  }
+  return { byId, byAttachment, byMedia }
+}
+
+function agentCacheIndexes(raw) {
+  const cache = normalizeAgentMediaCache(raw)
+  const byItem = new Map()
+  const byAttachment = new Map()
+  const byMedia = new Map()
+  const append = (index, key, entry) => {
+    if (!key) return
+    const entries = index.get(key) || []
+    entries.push(entry)
+    index.set(key, entries)
+  }
+  for (const entry of cache.entries) {
+    append(byItem, entry.sourceItemId, entry)
+    append(byAttachment, entry.attachmentId, entry)
+    append(byMedia, entry.mediaId, entry)
+  }
+  return { cache, byItem, byAttachment, byMedia }
+}
+
+function agentInputIdentity(item) {
+  if (item.type === 'attachment') return { attachmentId: item.attachment.id, mediaId: '', refId: '' }
+  if (item.type === 'ref') {
+    return {
+      attachmentId: item.ref.kind === 'attachment' ? item.ref.targetId : '',
+      mediaId: item.ref.kind === 'media' ? item.ref.targetId : '',
+      refId: item.ref.id,
+    }
+  }
+  return { attachmentId: item.attachmentId || '', mediaId: item.mediaId || item.id, refId: '' }
+}
+
+function agentCacheEntriesForItem(item, identity, cacheIndexes) {
+  const entries = [
+    ...(cacheIndexes.byItem.get(item.id) || []),
+    ...(identity.attachmentId ? cacheIndexes.byAttachment.get(identity.attachmentId) || [] : []),
+    ...(identity.mediaId ? cacheIndexes.byMedia.get(identity.mediaId) || [] : []),
+  ]
+  const seen = new Set()
+  return entries.filter((entry) => {
+    if (!entry || seen.has(entry.key)) return false
+    seen.add(entry.key)
+    return true
+  })
+}
+
+function agentCacheEntryForItem(item, identity, cacheIndexes) {
+  return agentCacheEntriesForItem(item, identity, cacheIndexes)[0] || null
+}
+
+function agentResolvedMedia(item, identity, cacheIndexes, capabilities) {
+  if (item.type === 'image') {
+    return { type: item.url.startsWith('data:') ? 'data_url' : 'url', value: item.url }
+  }
+  const ready = agentCacheEntriesForItem(item, identity, cacheIndexes)
+    .filter((entry) => entry.status === 'ready' && entry.resolved)
+  const supported = ready.find((entry) => capabilities.imageInputs.includes(entry.resolved.type))
+  return (supported || ready[0])?.resolved || null
+}
+
+function agentObservationForItem(item, identity, observationIndexes, cacheIndexes) {
+  const explicitId = agentPortableId(item.observationId)
+  const cacheObservation = agentCacheEntriesForItem(item, identity, cacheIndexes)
+    .map((entry) => agentPortableId(entry.observationId))
+    .map((id) => id ? observationIndexes.byId.get(id) : null)
+    .find(Boolean)
+  return (explicitId ? observationIndexes.byId.get(explicitId) : null)
+    || cacheObservation
+    || (identity.attachmentId ? observationIndexes.byAttachment.get(identity.attachmentId) : null)
+    || (identity.mediaId ? observationIndexes.byMedia.get(identity.mediaId) : null)
+    || null
+}
+
+function agentUsableObservation(observation) {
+  return Boolean(
+    observation
+    && ['ready', 'partial'].includes(observation.status)
+    && (String(observation.summary || '').trim() || (Array.isArray(observation.facts) && observation.facts.length > 0)),
+  )
+}
+
+function agentObservationProviderPart(item, identity, observation, reason = '') {
+  const fallback = {
+    schema: ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA,
+    id: agentFallbackId('observation', { item: item.id, ...identity }, 0),
+    ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+    ...(identity.mediaId ? { mediaId: identity.mediaId } : {}),
+    kind: item.type === 'attachment' ? item.attachment.kind : ['image', 'localImage'].includes(item.type) ? 'image' : 'other',
+    status: 'unavailable',
+    summary: reason || 'No host-provided media observation is available.',
+    facts: [],
+  }
+  const structured = {
+    schema: ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA,
+    sourceItemId: item.id,
+    ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+    ...(identity.mediaId ? { mediaId: identity.mediaId } : {}),
+    ...(identity.refId ? { refId: identity.refId } : {}),
+    observation: observation || fallback,
+  }
+  return {
+    type: 'input_text',
+    sourceItemId: item.id,
+    ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+    ...(identity.mediaId ? { mediaId: identity.mediaId } : {}),
+    ...(identity.refId ? { refId: identity.refId } : {}),
+    structured: true,
+    text: JSON.stringify(structured),
+  }
+}
+
+/** Project canonical turn inputs without mutating, aggregating, fetching, or reading them. */
+export function projectAgentInputItemsForProvider(rawItems, options = {}) {
+  const sourceItems = Array.isArray(rawItems) ? rawItems : rawItems === undefined || rawItems === null ? [] : [rawItems]
+  const inputItems = normalizeAgentInputItems(rawItems)
+  const capabilities = normalizeAgentProviderCapabilities(options.capabilities || options.providerCapabilities)
+  const observationIndexes = agentObservationIndexes(options.observations)
+  const cacheIndexes = agentCacheIndexes(options.mediaCache)
+  const providerItems = []
+  const issues = sourceItems.flatMap((value, index) => normalizeAgentInputItem(value, { index }) ? [] : [{
+    code: 'invalid_input_item',
+    severity: 'error',
+    sourceItemId: agentPortableId(executionObject(value).id || executionObject(value).itemId, `input-${index + 1}`),
+    message: 'The input item is invalid or contains an unsafe media source.',
+  }])
+  let imageCount = 0
+
+  for (const item of inputItems) {
+    if (item.type === 'text') {
+      providerItems.push({ type: 'input_text', sourceItemId: item.id, text: item.text })
+      continue
+    }
+    const identity = agentInputIdentity(item)
+    const observation = agentObservationForItem(item, identity, observationIndexes, cacheIndexes)
+    const usableObservation = agentUsableObservation(observation)
+    const cacheEntries = agentCacheEntriesForItem(item, identity, cacheIndexes)
+    const cacheEntry = cacheEntries.find((entry) => String(entry.mediaType || '').startsWith('image/')) || cacheEntries[0] || null
+    const resolved = agentResolvedMedia(item, identity, cacheIndexes, capabilities)
+    const refIsVisual = item.type === 'ref'
+      && (observation?.kind === 'image' || String(cacheEntry?.mediaType || '').startsWith('image/'))
+    const visualKind = item.type === 'image'
+      || item.type === 'localImage'
+      || (item.type === 'attachment' && item.attachment.kind === 'image')
+      || refIsVisual
+    const supportedImage = Boolean(
+      visualKind
+      && capabilities.vision
+      && resolved
+      && capabilities.imageInputs.includes(resolved.type)
+      && imageCount < capabilities.maxImagesPerTurn,
+    )
+    if (supportedImage) {
+      imageCount += 1
+      providerItems.push({
+        type: 'input_image',
+        sourceItemId: item.id,
+        ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+        ...(identity.mediaId ? { mediaId: identity.mediaId } : {}),
+        ...(identity.refId ? { refId: identity.refId } : {}),
+        source: { ...resolved },
+        detail: item.detail || 'auto',
+      })
+      continue
+    }
+    if (capabilities.vision && visualKind && imageCount >= capabilities.maxImagesPerTurn) {
+      issues.push({ code: 'image_limit', severity: 'warning', sourceItemId: item.id, message: 'The provider image limit was reached; projected the item observation instead.' })
+    } else if (capabilities.vision && visualKind && !resolved) {
+      issues.push({ code: 'media_unresolved', severity: 'error', sourceItemId: item.id, message: 'The host did not provide a provider-ready media cache entry.' })
+    } else if (capabilities.vision && visualKind && resolved && !capabilities.imageInputs.includes(resolved.type)) {
+      issues.push({ code: 'media_source_unsupported', severity: 'error', sourceItemId: item.id, message: `The provider does not accept ${resolved.type} image inputs.` })
+    }
+    if (!observation) {
+      issues.push({
+        code: 'media_observation_missing',
+        severity: 'error',
+        sourceItemId: item.id,
+        ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+        message: 'A structured media observation is required before this input can be sent to the provider.',
+      })
+    } else if (!usableObservation) {
+      issues.push({
+        code: 'media_observation_error',
+        severity: 'error',
+        sourceItemId: item.id,
+        ...(identity.attachmentId ? { attachmentId: identity.attachmentId } : {}),
+        message: 'The structured media observation is unavailable, failed, or empty.',
+      })
+    }
+    providerItems.push(agentObservationProviderPart(
+      item,
+      identity,
+      observation,
+      capabilities.vision ? 'The image could not be projected with the provider capabilities supplied by the host.' : 'The text-only provider received a structured media observation.',
+    ))
+  }
+
+  return {
+    schema: ORBIT_AGENT_INPUT_PROJECTION_SCHEMA,
+    capabilities,
+    inputItems,
+    providerItems,
+    issues,
+    blocked: issues.some((issue) => issue.severity === 'error'),
+  }
+}
+
+export function assertAgentInputProjectionReady(projection) {
+  const source = executionObject(projection)
+  if (source.schema !== ORBIT_AGENT_INPUT_PROJECTION_SCHEMA || !Array.isArray(source.issues)) {
+    throw new TypeError('Agent input projection is invalid')
+  }
+  const blocking = source.issues.filter((issue) => issue && issue.severity === 'error')
+  if (!blocking.length) return true
+  const error = new Error(`Agent input projection is blocked: ${blocking.slice(0, 4).map((issue) => `${issue.code}:${issue.sourceItemId}`).join(', ')}`)
+  error.code = 'ORBIT_AGENT_INPUT_PROJECTION_BLOCKED'
+  error.issues = blocking
+  throw error
+}
+
+export function projectAgentTurnForProvider(rawTurn, options = {}) {
+  const turn = normalizeAgentTurn(rawTurn, options)
+  if (!turn) throw new TypeError('Agent turn is invalid')
+  const projection = projectAgentInputItemsForProvider(turn.inputItems, options)
+  return { ...projection, turn }
 }
 
 function agentToolCalls(value) {
@@ -539,7 +1276,7 @@ export function transitionAgentExecutionState(state, event, policy = ORBIT_AGENT
  * sharing one response budget across reasoning and tool calls.
  */
 export const ORBIT_AGENT_MODEL_OUTPUT_LIMITS = Object.freeze({
-  agent: 16_000,
+  agent: 65_536,
   referenceMedia: 4_096,
 })
 
@@ -1225,15 +1962,148 @@ export function estimateAgentTextTokens(text) {
   return Math.ceil(ascii / 4 + nonAscii / 1.5)
 }
 
+function agentMessageContentText(value, maximum = Number.MAX_SAFE_INTEGER) {
+  const limit = Number.isSafeInteger(maximum) && maximum > 0 ? maximum : Number.MAX_SAFE_INTEGER
+  const parts = []
+  let length = 0
+  const append = (text) => {
+    if (length >= limit) return
+    const source = String(text || '')
+    if (!source) return
+    const remaining = limit - length
+    const chunk = source.slice(0, remaining)
+    parts.push(chunk)
+    length += chunk.length
+  }
+  const visit = (entry, depth = 0) => {
+    if (length >= limit || entry === undefined || entry === null || depth > 8) return
+    if (typeof entry === 'string') {
+      append(entry)
+      return
+    }
+    if (Array.isArray(entry)) {
+      for (const item of entry) visit(item, depth + 1)
+      return
+    }
+    if (typeof entry !== 'object') {
+      append(String(entry))
+      return
+    }
+    const type = String(entry.type || '')
+    if (typeof entry.text === 'string') {
+      append(entry.text)
+      return
+    }
+    if (['image', 'image_url', 'input_image'].includes(type) || entry.image_url) {
+      append('[image input]')
+      return
+    }
+    try {
+      append(JSON.stringify(entry))
+    } catch {
+      append(Object.prototype.toString.call(entry))
+    }
+  }
+  visit(value)
+  return parts.join('\n')
+}
+
+function agentMessageImageCount(value) {
+  let count = 0
+  const visit = (entry, depth = 0) => {
+    if (entry === undefined || entry === null || depth > 8) return
+    if (Array.isArray(entry)) {
+      for (const item of entry) visit(item, depth + 1)
+      return
+    }
+    if (typeof entry !== 'object') return
+    const type = String(entry.type || '')
+    if (['image', 'image_url', 'input_image'].includes(type) || entry.image_url) count += 1
+  }
+  visit(value)
+  return count
+}
+
+function agentMessageFingerprintValue(value) {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value ?? null)
+  } catch {
+    return Object.prototype.toString.call(value)
+  }
+}
+
+function agentMessageInputItems(message) {
+  const raw = Array.isArray(message?.inputItems)
+    ? message.inputItems
+    : Array.isArray(message?.input_items)
+      ? message.input_items
+      : []
+  return normalizeAgentInputItems(raw)
+}
+
+function isAgentTurnInputMessage(message) {
+  return Boolean(message && message.role === 'user' && agentMessageInputItems(message).length)
+}
+
+function compactAgentMessageText(value, maximum, head, tail) {
+  const source = String(value || '')
+  if (source.length <= maximum) return source
+  return `${source.slice(0, head)}\n[older structured user text compacted]\n${source.slice(-tail)}`
+}
+
+function compactAgentStructuredContent(content, maximum = 8_000) {
+  if (typeof content === 'string') return compactAgentMessageText(content, maximum, 1_600, 4_000)
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (!part || typeof part !== 'object' || typeof part.text !== 'string') return part
+    return { ...part, text: compactAgentMessageText(part.text, maximum, 1_600, 4_000) }
+  })
+}
+
+function compactAgentInputItemSidecar(value) {
+  return agentMessageInputItems({ inputItems: value }).map((item) => item.type === 'text'
+    ? { ...item, text: compactAgentMessageText(item.text, 8_000, 1_600, 4_000) }
+    : item)
+}
+
 function messageTextSize(message) {
   if (!message || typeof message !== 'object') return { chars: 0, tokens: 0 }
-  const values = [message.role, message.content, message.reasoning, message.reasoning_content, message.name, message.tool_call_id]
+  const contentText = agentMessageContentText(message.content)
+  const imageCount = agentMessageImageCount(message.content)
+  const values = [message.role, message.reasoning, message.reasoning_content, message.name, message.tool_call_id]
   if (Array.isArray(message.tool_calls)) values.push(JSON.stringify(message.tool_calls))
   if (Array.isArray(message.reasoning_details)) values.push(JSON.stringify(message.reasoning_details))
   if (Array.isArray(message.response_items)) values.push(JSON.stringify(message.response_items))
   if (message.orbit_internal && typeof message.orbit_internal === 'object') values.push(JSON.stringify(message.orbit_internal))
-  const text = values.filter((value) => value !== undefined && value !== null).map(String).join('\n')
-  return { chars: text.length, tokens: estimateAgentTextTokens(text) }
+  const baseText = values.filter((value) => value !== undefined && value !== null).map(String).join('\n')
+  const inputItems = agentMessageInputItems(message)
+  const observations = Array.isArray(message.mediaObservations)
+    ? message.mediaObservations
+    : Array.isArray(message.media_observations)
+      ? message.media_observations
+      : []
+  const sidecarText = [
+    ...inputItems.map((item) => item.type === 'text' ? item.text : `[${item.type} input:${item.id}]`),
+    ...observations.map((observation) => {
+      const normalized = normalizeAgentMediaObservation(observation)
+      return normalized ? [normalized.summary, ...normalized.facts.map((fact) => fact.text)].join('\n') : ''
+    }),
+  ].filter(Boolean).join('\n')
+  const contentChars = contentText.length + imageCount * 8_192
+  const contentTokens = estimateAgentTextTokens(contentText) + imageCount * 2_048
+  const sidecarImageCount = inputItems.filter((item) => item.type === 'image' || item.type === 'localImage'
+    || item.type === 'attachment' && item.attachment.kind === 'image').length
+  const sidecarChars = sidecarText.length + sidecarImageCount * 8_192
+  const sidecarTokens = estimateAgentTextTokens(sidecarText) + sidecarImageCount * 2_048
+  // Image tokenization is provider/model dependent. A conservative portable
+  // estimate prevents structured image turns from looking nearly free. Host
+  // input sidecars describe the same projected turn, so use the larger view
+  // instead of double-counting both persistent and provider representations.
+  return {
+    chars: baseText.length + Math.max(contentChars, sidecarChars),
+    tokens: estimateAgentTextTokens(baseText) + Math.max(contentTokens, sidecarTokens),
+  }
 }
 
 function resolvedContextPolicy(policy = {}) {
@@ -1281,8 +2151,10 @@ function compactPortableMessage(message, preserveFull) {
     if (typeof next.content === 'string' && next.content.length > 4000) next.content = next.content.slice(0, 1000) + '\n[older assistant text elided]\n' + next.content.slice(-2500)
   } else if (next.role === 'tool' && typeof next.content === 'string' && next.content.length > 6000) {
     next.content = '[older tool result compacted; rerun the tool if exact output is needed]\n' + next.content.slice(-5000)
-  } else if (next.role === 'user' && typeof next.content === 'string' && next.content.length > 8000) {
-    next.content = next.content.slice(0, 1600) + '\n[older user observation compacted]\n' + next.content.slice(-4000)
+  } else if (next.role === 'user') {
+    next.content = compactAgentStructuredContent(next.content)
+    if (Array.isArray(next.inputItems)) next.inputItems = compactAgentInputItemSidecar(next.inputItems)
+    if (Array.isArray(next.input_items)) next.input_items = compactAgentInputItemSidecar(next.input_items)
   }
   if (typeof next.content === 'string') next.content = redactAgentSensitiveText(next.content)
   if (typeof next.reasoning === 'string') next.reasoning = redactAgentSensitiveText(next.reasoning)
@@ -1530,11 +2402,11 @@ function isCompactionSummaryMessage(message) {
 /** Remove host-only message metadata without changing any provider field. */
 export function projectAgentMessagesForProvider(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
-    if (!message || typeof message !== 'object' || !Object.prototype.hasOwnProperty.call(message, 'orbit_internal')) {
-      return message
-    }
+    if (!message || typeof message !== 'object') return message
+    const hostFields = ['orbit_internal', 'inputItems', 'input_items', 'mediaObservations', 'media_observations']
+    if (!hostFields.some((field) => Object.prototype.hasOwnProperty.call(message, field))) return message
     const projected = { ...message }
-    delete projected.orbit_internal
+    for (const field of hostFields) delete projected[field]
     return projected
   })
 }
@@ -1543,10 +2415,14 @@ function compactionMessageFingerprint(messages) {
   let hash = 2166136261
   const source = Array.isArray(messages) ? messages : []
   for (const message of source) {
-    const values = [message?.role, message?.tool_call_id, message?.content, message?.reasoning, message?.reasoning_content]
+    const values = [message?.role, message?.tool_call_id, agentMessageFingerprintValue(message?.content), message?.reasoning, message?.reasoning_content]
     if (Array.isArray(message?.tool_calls)) values.push(JSON.stringify(message.tool_calls))
     if (Array.isArray(message?.reasoning_details)) values.push(JSON.stringify(message.reasoning_details))
     if (Array.isArray(message?.response_items)) values.push(JSON.stringify(message.response_items))
+    if (Array.isArray(message?.inputItems)) values.push(JSON.stringify(message.inputItems))
+    if (Array.isArray(message?.input_items)) values.push(JSON.stringify(message.input_items))
+    if (Array.isArray(message?.mediaObservations)) values.push(JSON.stringify(message.mediaObservations))
+    if (Array.isArray(message?.media_observations)) values.push(JSON.stringify(message.media_observations))
     if (message?.orbit_internal && typeof message.orbit_internal === 'object') values.push(JSON.stringify(message.orbit_internal))
     const text = values.filter((value) => value !== undefined && value !== null).map(String).join('|')
     for (let index = 0; index < text.length; index += 1) {
@@ -1571,8 +2447,9 @@ function defaultCompactionProjection(message) {
   if (!message || typeof message !== 'object') return null
   const compacted = compactPortableMessage(message, false)
   const projected = { role: compacted.role }
-  if (typeof compacted.content === 'string') projected.content = redactAgentSensitiveText(compacted.content)
-  else if (compacted.content !== undefined) projected.content = redactAgentSensitiveText(String(compacted.content).slice(0, 8_000))
+  if (compacted.content !== undefined) {
+    projected.content = redactAgentSensitiveText(agentMessageContentText(compacted.content, 8_000))
+  }
   if (compacted.tool_call_id) projected.tool_call_id = String(compacted.tool_call_id)
   if (Array.isArray(compacted.tool_calls)) {
     projected.tool_calls = compacted.tool_calls.slice(0, 16).map((call) => ({
@@ -1580,6 +2457,55 @@ function defaultCompactionProjection(message) {
       name: call && call.function && call.function.name,
       arguments: redactAgentSensitiveText(String((call && call.function && call.function.arguments) || '').slice(0, 2_000)),
     }))
+  }
+  const rawInputItems = Array.isArray(compacted.inputItems)
+    ? compacted.inputItems
+    : Array.isArray(compacted.input_items)
+      ? compacted.input_items
+      : []
+  if (rawInputItems.length) {
+    projected.inputItemRefs = normalizeAgentInputItems(rawInputItems).slice(0, 64).map((item) => {
+      if (item.type === 'text') {
+        return { id: item.id, type: item.type, text: redactAgentSensitiveText(item.text).slice(0, 2_000) }
+      }
+      if (item.type === 'attachment') {
+        return {
+          id: item.id,
+          type: item.type,
+          attachmentId: item.attachment.id,
+          kind: item.attachment.kind,
+          ...(item.attachment.name ? { name: item.attachment.name } : {}),
+          ...(item.observationId ? { observationId: item.observationId } : {}),
+        }
+      }
+      if (item.type === 'ref') {
+        return {
+          id: item.id,
+          type: item.type,
+          refId: item.ref.id,
+          refKind: item.ref.kind,
+          targetId: item.ref.targetId,
+          ...(item.observationId ? { observationId: item.observationId } : {}),
+        }
+      }
+      return {
+        id: item.id,
+        type: item.type,
+        mediaId: item.mediaId || item.id,
+        ...(item.attachmentId ? { attachmentId: item.attachmentId } : {}),
+      }
+    })
+  }
+  const rawObservations = Array.isArray(compacted.mediaObservations)
+    ? compacted.mediaObservations
+    : Array.isArray(compacted.media_observations)
+      ? compacted.media_observations
+      : []
+  if (rawObservations.length) {
+    projected.mediaObservations = rawObservations
+      .map((observation) => normalizeAgentMediaObservation(observation))
+      .filter(Boolean)
+      .slice(0, 64)
   }
   return projected
 }
@@ -1606,6 +2532,13 @@ function serializedCompactionSource(message, sourceRef) {
 export function buildAgentSemanticCompactionPrompt(input = {}) {
   const source = Array.isArray(input.messages) ? input.messages : []
   const maximumTokens = boundedInteger(input.maxInputTokens, 96_000, 8_000, 512_000)
+  const retainedUserContext = (Array.isArray(input.retainedUserMessages) ? input.retainedUserMessages : [])
+    .slice(-8)
+    .map((message, index) => {
+      const projected = defaultCompactionProjection(message)
+      return projected ? `[retained-user-${index + 1}] ${JSON.stringify(projected)}` : ''
+    })
+    .filter(Boolean)
   const fixedParts = [
     'Create a faithful working-memory checkpoint for an autonomous coding agent.',
     'Return ONLY one JSON object matching schema "' + ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA + '".',
@@ -1616,6 +2549,9 @@ export function buildAgentSemanticCompactionPrompt(input = {}) {
     input.previousSummary ? 'Previous semantic checkpoint to update:\n' + JSON.stringify(redactAgentSensitiveValue(input.previousSummary)) : '',
     input.plan ? 'Current execution plan (authoritative for open todo status):\n' + redactAgentSensitiveText(JSON.stringify(input.plan)).slice(0, 8_000) : '',
     ...(Array.isArray(input.durableFacts) ? input.durableFacts.slice(0, 12).map((fact) => 'Pinned host fact: ' + cleanCompactionText(fact, 2_000)) : []),
+    retainedUserContext.length
+      ? 'Canonical/retained user context (also retained outside the summary):\n' + retainedUserContext.join('\n')
+      : '',
     'Older messages to summarize, with stable source refs:',
   ].filter(Boolean)
   let usedTokens = estimateAgentTextTokens(fixedParts.join('\n\n'))
@@ -1632,19 +2568,23 @@ export function buildAgentSemanticCompactionPrompt(input = {}) {
   return [...fixedParts, ...entries].join('\n\n')
 }
 
-function recentCompactionUserMessages(source, firstUser, limits) {
-  const selected = []
+function recentCompactionUserMessages(source, firstUser, latestTurnUser, limits) {
+  const selected = new Set()
   let tokens = 0
+  if (latestTurnUser && latestTurnUser !== firstUser) {
+    selected.add(latestTurnUser)
+    tokens += Math.min(messageTextSize(latestTurnUser).tokens, limits.recentUserTokenBudget)
+  }
   for (let index = source.length - 1; index >= 0; index -= 1) {
     const message = source[index]
-    if (!message || message === firstUser || message.role !== 'user' || isCompactionSummaryMessage(message)) continue
+    if (!message || message === firstUser || message === latestTurnUser || message.role !== 'user' || isCompactionSummaryMessage(message)) continue
     const size = messageTextSize(message).tokens
-    if (selected.length && tokens + size > limits.recentUserTokenBudget) continue
-    selected.unshift(message)
+    if (selected.size && tokens + size > limits.recentUserTokenBudget) continue
+    selected.add(message)
     tokens += size
-    if (selected.length >= limits.keepRecentUserMessages) break
+    if (selected.size >= limits.keepRecentUserMessages) break
   }
-  return selected
+  return source.filter((message) => selected.has(message))
 }
 
 export function prepareAgentMessageCompaction(messages, options = {}) {
@@ -1671,6 +2611,7 @@ export function prepareAgentMessageCompaction(messages, options = {}) {
 
   const canonicalMessages = source.filter((message) => message && message.role === 'system')
   const firstUser = source.find((message) => message && message.role === 'user' && !isCompactionSummaryMessage(message)) || null
+  const latestTurnUser = [...source].reverse().find((message) => isAgentTurnInputMessage(message)) || firstUser
   const fixed = new Set([...canonicalMessages, firstUser].filter(Boolean))
   const previousSummaryMessage = [...source].reverse().find(isCompactionSummaryMessage) || null
   const previousSummary = previousSummaryMessage ? normalizeAgentSemanticSummary(previousSummaryMessage) : null
@@ -1685,7 +2626,7 @@ export function prepareAgentMessageCompaction(messages, options = {}) {
   }
   const keptBlocks = new Set(tailBlocks)
   const droppedMessages = blocks.filter((block) => !keptBlocks.has(block)).flat()
-  const recentUserMessages = recentCompactionUserMessages(source, firstUser, policy)
+  const recentUserMessages = recentCompactionUserMessages(source, firstUser, latestTurnUser, policy)
   const projected = []
   const projectedRefs = []
   for (const message of droppedMessages) {
@@ -1699,6 +2640,7 @@ export function prepareAgentMessageCompaction(messages, options = {}) {
     .map((fact) => cleanCompactionText(fact, 2_000)).filter(Boolean)
   const prompt = buildAgentSemanticCompactionPrompt({
     messages: projected,
+    retainedUserMessages: [firstUser, latestTurnUser, ...recentUserMessages].filter(Boolean),
     previousSummary,
     plan: options.plan || null,
     durableFacts,
@@ -1716,6 +2658,7 @@ export function prepareAgentMessageCompaction(messages, options = {}) {
       : null,
     canonicalMessages,
     firstUser,
+    latestTurnUser,
     previousSummary,
     recentUserMessages,
     tailBlocks,
@@ -1727,11 +2670,9 @@ export function prepareAgentMessageCompaction(messages, options = {}) {
 }
 
 function deterministicAgentSemanticSummary(preparation) {
-  const firstUserContent = preparation.firstUser && typeof preparation.firstUser.content === 'string'
-    ? preparation.firstUser.content
-    : ''
-  const latest = preparation.recentUserMessages[preparation.recentUserMessages.length - 1]
-  const latestContent = latest && typeof latest.content === 'string' ? latest.content : firstUserContent
+  const firstUserContent = agentMessageContentText(preparation.firstUser?.content, 8_000)
+  const latest = preparation.latestTurnUser || preparation.recentUserMessages[preparation.recentUserMessages.length - 1]
+  const latestContent = agentMessageContentText(latest?.content, 8_000) || firstUserContent
   const openWork = preparation.plan
     ? agentPlanOpenTodos(preparation.plan).slice(0, 12).map((todo) => cleanCompactionText(todo.title, 500)).filter(Boolean)
     : []
@@ -1740,7 +2681,7 @@ function deterministicAgentSemanticSummary(preparation) {
     objective: cleanCompactionText(firstUserContent, 2_000),
     latestUserIntent: cleanCompactionText(latestContent, 2_000),
     userConstraints: [],
-    userCorrections: preparation.recentUserMessages.slice(-6).map((message) => cleanCompactionText(message.content, 600)).filter(Boolean),
+    userCorrections: preparation.recentUserMessages.slice(-6).map((message) => cleanCompactionText(agentMessageContentText(message.content, 2_000), 600)).filter(Boolean),
     decisions: [],
     workspaceChanges: [],
     validation: [],
@@ -1792,17 +2733,33 @@ function withoutOrphanToolMessages(messages) {
   return messages.filter((message) => !message || message.role !== 'tool' || ids.has(message.tool_call_id))
 }
 
+function visualCompactionPins(preparation) {
+  const selected = []
+  let imageCount = 0
+  for (const message of [...preparation.droppedMessages].reverse()) {
+    if (!message || message.role !== 'user') continue
+    const images = agentMessageInputItems(message).filter((item) => item.type === 'image' || item.type === 'localImage'
+      || item.type === 'attachment' && item.attachment.kind === 'image').length
+    if (!images || imageCount + images > 8) continue
+    selected.unshift(compactPortableMessage(message, false))
+    imageCount += images
+  }
+  return selected
+}
+
 function assembleCompactedMessages(preparation, summaryMessage, tailBlocks) {
   const tail = tailBlocks.flat()
   const tailSet = new Set(tail)
   const recent = preparation.recentUserMessages
     .filter((message) => message !== preparation.firstUser && !tailSet.has(message))
     .map((message) => compactPortableMessage(message, false))
+  const visualPins = visualCompactionPins(preparation)
   const preserveFrom = Math.max(0, tail.length - 4)
   return withoutOrphanToolMessages([
     ...preparation.canonicalMessages,
     preparation.firstUser,
     summaryMessage,
+    ...visualPins,
     ...recent,
     ...tail.map((message, index) => compactPortableMessage(message, index >= preserveFrom)),
   ].filter(Boolean))
@@ -2002,6 +2959,39 @@ const CORE_HELPERS = [
   executionObject,
   executionCount,
   executionKey,
+  agentMessageContentText,
+  agentMessageImageCount,
+  agentMessageFingerprintValue,
+  agentMessageInputItems,
+  isAgentTurnInputMessage,
+  compactAgentMessageText,
+  compactAgentStructuredContent,
+  compactAgentInputItemSidecar,
+  agentPortableText,
+  agentPortableId,
+  agentStableHash,
+  agentFallbackId,
+  agentPortableMetadata,
+  agentOptionalTimestamp,
+  agentOptionalPositiveInteger,
+  agentMediaKind,
+  agentInputItemType,
+  agentImageUrl,
+  agentPrivateNetworkHostname,
+  agentSafeImageUrl,
+  agentSafeInlineImageUrl,
+  agentLocalImagePath,
+  normalizeAgentMediaFact,
+  normalizeAgentMediaCacheEntry,
+  agentObservationIndexes,
+  agentCacheIndexes,
+  agentInputIdentity,
+  agentCacheEntriesForItem,
+  agentCacheEntryForItem,
+  agentResolvedMedia,
+  agentObservationForItem,
+  agentUsableObservation,
+  agentObservationProviderPart,
   agentToolSpecName,
   agentToolCalls,
   agentToolCallId,
@@ -2043,11 +3033,24 @@ const CORE_HELPERS = [
   deterministicAgentSemanticSummary,
   compactionSummaryMessage,
   withoutOrphanToolMessages,
+  visualCompactionPins,
   assembleCompactedMessages,
   normalizedCheckpointRecentUsers,
 ]
 
 const CORE_EXPORTS = [
+  ['normalizeAgentInputItem', normalizeAgentInputItem],
+  ['normalizeAgentInputItems', normalizeAgentInputItems],
+  ['normalizeAgentMediaObservation', normalizeAgentMediaObservation],
+  ['normalizeAgentMediaCache', normalizeAgentMediaCache],
+  ['normalizeAgentProject', normalizeAgentProject],
+  ['normalizeAgentTurn', normalizeAgentTurn],
+  ['normalizeAgentThread', normalizeAgentThread],
+  ['normalizeAgentSession', normalizeAgentSession],
+  ['normalizeAgentProviderCapabilities', normalizeAgentProviderCapabilities],
+  ['projectAgentInputItemsForProvider', projectAgentInputItemsForProvider],
+  ['assertAgentInputProjectionReady', assertAgentInputProjectionReady],
+  ['projectAgentTurnForProvider', projectAgentTurnForProvider],
   ['normalizeAgentToolCapability', normalizeAgentToolCapability],
   ['defineAgentToolCapability', defineAgentToolCapability],
   ['createAgentToolCapabilityRegistry', createAgentToolCapabilityRegistry],
@@ -2103,9 +3106,10 @@ const CORE_EXPORTS = [
   ['compactAgentMessagesIfNeeded', compactAgentMessagesIfNeeded],
 ]
 
-/** Build the exact ESM module uploaded beside orbit-runner.mjs in E2B. */
-export function buildOrbitProAgentCoreModuleSource() {
+/** Build the exact ESM module uploaded beside host runners. */
+export function buildOrbitAgentCoreModuleSource() {
   const declarations = [
+    `const ORBIT_AGENT_CORE_VERSION = ${JSON.stringify(ORBIT_AGENT_CORE_VERSION)}`,
     `const ORBIT_PRO_AGENT_CORE_VERSION = ${JSON.stringify(ORBIT_PRO_AGENT_CORE_VERSION)}`,
     `const ORBIT_AGENT_EXECUTION_POLICY = Object.freeze(${JSON.stringify(ORBIT_AGENT_EXECUTION_POLICY)})`,
     `const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA)}`,
@@ -2118,6 +3122,14 @@ export function buildOrbitProAgentCoreModuleSource() {
     `const ORBIT_AGENT_CHECKPOINT_SCHEMA = ${JSON.stringify(ORBIT_AGENT_CHECKPOINT_SCHEMA)}`,
     `const ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA)}`,
     `const ORBIT_AGENT_TOOL_BATCH_SCHEMA = ${JSON.stringify(ORBIT_AGENT_TOOL_BATCH_SCHEMA)}`,
+    `const ORBIT_AGENT_PROJECT_SCHEMA = ${JSON.stringify(ORBIT_AGENT_PROJECT_SCHEMA)}`,
+    `const ORBIT_AGENT_THREAD_SCHEMA = ${JSON.stringify(ORBIT_AGENT_THREAD_SCHEMA)}`,
+    `const ORBIT_AGENT_TURN_SCHEMA = ${JSON.stringify(ORBIT_AGENT_TURN_SCHEMA)}`,
+    `const ORBIT_AGENT_INPUT_ITEM_SCHEMA = ${JSON.stringify(ORBIT_AGENT_INPUT_ITEM_SCHEMA)}`,
+    `const ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA = ${JSON.stringify(ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA)}`,
+    `const ORBIT_AGENT_MEDIA_CACHE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_MEDIA_CACHE_SCHEMA)}`,
+    `const ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA)}`,
+    `const ORBIT_AGENT_INPUT_PROJECTION_SCHEMA = ${JSON.stringify(ORBIT_AGENT_INPUT_PROJECTION_SCHEMA)}`,
     `const ORBIT_CONTEXT_SUMMARY_MARKER = Symbol.for('orbit.agent-context-summary.v1')`,
     `const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze(${JSON.stringify(ORBIT_AGENT_CAPABILITY_PROFILES)})`,
     `const ORBIT_VISUAL_PLAN_MAX_CANDIDATES = ${JSON.stringify(ORBIT_VISUAL_PLAN_MAX_CANDIDATES)}`,
@@ -2128,6 +3140,7 @@ export function buildOrbitProAgentCoreModuleSource() {
     ...CORE_EXPORTS.map(([, fn]) => fn.toString()),
   ]
   const aliases = [
+    'ORBIT_AGENT_CORE_VERSION',
     'ORBIT_PRO_AGENT_CORE_VERSION',
     'ORBIT_AGENT_EXECUTION_POLICY',
     'ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA',
@@ -2140,6 +3153,14 @@ export function buildOrbitProAgentCoreModuleSource() {
     'ORBIT_AGENT_CHECKPOINT_SCHEMA',
     'ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA',
     'ORBIT_AGENT_TOOL_BATCH_SCHEMA',
+    'ORBIT_AGENT_PROJECT_SCHEMA',
+    'ORBIT_AGENT_THREAD_SCHEMA',
+    'ORBIT_AGENT_TURN_SCHEMA',
+    'ORBIT_AGENT_INPUT_ITEM_SCHEMA',
+    'ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA',
+    'ORBIT_AGENT_MEDIA_CACHE_SCHEMA',
+    'ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA',
+    'ORBIT_AGENT_INPUT_PROJECTION_SCHEMA',
     'ORBIT_AGENT_CAPABILITY_PROFILES',
     'ORBIT_VISUAL_PLAN_MAX_CANDIDATES',
     'ORBIT_LOOP_ITERATION_POLICY',
@@ -2148,4 +3169,9 @@ export function buildOrbitProAgentCoreModuleSource() {
     ...CORE_EXPORTS.map(([exportName, fn]) => `${fn.name} as ${exportName}`),
   ]
   return `${declarations.join('\n\n')}\n\nexport { ${aliases.join(', ')} }\n`
+}
+
+/** @deprecated Use buildOrbitAgentCoreModuleSource. */
+export function buildOrbitProAgentCoreModuleSource() {
+  return buildOrbitAgentCoreModuleSource()
 }

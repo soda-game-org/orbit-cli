@@ -9,7 +9,7 @@ import {
   orbitCodingModelDisplay,
   type OrbitManagedModelDescriptor,
 } from './model-display.mjs'
-import { publicError } from './util.mjs'
+import { canonicalDirectory, publicError } from './util.mjs'
 import type { RunProgressEvent } from './run-manager.mjs'
 import type { OrbitCliConfig, OrbitRun } from './types.mjs'
 
@@ -35,6 +35,9 @@ const YELLOW = '\u001b[33m'
 const COMMANDS = Object.freeze([
   { command: '/help', detail: 'Show the command palette' },
   { command: '/status', detail: 'Show the active workspace, model, and permissions' },
+  { command: '/sessions', detail: 'List project sessions' },
+  { command: '/session new [title]', detail: 'Start another session in this project' },
+  { command: '/session <id>', detail: 'Continue a project session' },
   { command: '/new [path]', detail: 'Start work in another game workspace' },
   { command: '/resume [run-id]', detail: 'Resume a saved run; defaults to the latest resumable run' },
   { command: '/runs', detail: 'Show recent local runs' },
@@ -336,15 +339,15 @@ export async function runInteractiveSession({
 
   let config = await app.config.get() as OrbitCliConfig
   let managedModel: OrbitManagedModelDescriptor = ORBIT_MANAGED_DEFAULT_MODEL
-  let workspace = path.resolve(cwd)
+  let workspace = await canonicalDirectory(path.resolve(cwd), { create: true })
   let allowShell = false
   let generateImages = false
   let generate3d = false
   let attachments: string[] = []
-  let lastRunId = ''
-  let operation: 'create' | 'edit' = (await app.store.list()).some((run: OrbitRun) => path.resolve(run.workspace) === workspace)
-    ? 'edit'
-    : 'create'
+  let projectThreads = await app.store.listThreads(workspace)
+  let activeThread = projectThreads[0] || await app.store.createThread(workspace, 'New session')
+  let lastRunId = String(activeThread.latestRunId || '')
+  let operation: 'create' | 'edit' = lastRunId ? 'edit' : 'create'
   let webServer: any = null
 
   const refreshManagedModel = async (): Promise<void> => {
@@ -389,12 +392,24 @@ export async function runInteractiveSession({
             cloudLogs: config.cloudLogs,
             allowShell,
             referenceImages: attachments,
+            threadId: activeThread.id,
             onProgress,
           })
       progress.stop()
-      lastRunId = run.id
-      workspace = run.workspace
-      operation = 'edit'
+      if (run.kind !== 'asset3d' && run.kind !== 'assetimage') {
+        const nextWorkspace = await canonicalDirectory(run.workspace)
+        const nextThreads = await app.store.listThreads(nextWorkspace)
+        const link = typeof app.store.linkForRun === 'function' ? await app.store.linkForRun(run.id) : null
+        const nextThread = link
+          ? nextThreads.find((thread: any) => thread.id === link.threadId)
+          : nextThreads.find((thread: any) => thread.id === activeThread.id) || (nextWorkspace === workspace ? activeThread : null)
+        if (!nextThread) throw new Error(`Completed run ${run.id} has no session in its project`)
+        workspace = nextWorkspace
+        projectThreads = nextThreads
+        activeThread = nextThread
+        lastRunId = run.id
+        operation = 'edit'
+      } else lastRunId = run.id
       attachments = []
       write(runSummary(run, color))
     } finally {
@@ -436,6 +451,7 @@ export async function runInteractiveSession({
           write([
             paint('Session status', BOLD, color),
             `  workspace   ${workspace}`,
+            `  session     ${activeThread.title || 'Untitled'} · ${activeThread.id}`,
             `  mode        ${sessionMode(config, managedModel)}`,
             `  runtime     ${config.runtime}`,
             `  assets      images ${generateImages ? 'on' : 'off'} · 3d ${generate3d ? 'on' : 'off'}`,
@@ -444,11 +460,34 @@ export async function runInteractiveSession({
             lastRunId ? paint(`  last run    ${lastRunId}`, DIM, color) : '',
           ].filter(Boolean).join('\n'))
         } else if (command === '/new' || command === '/workspace' || command === '/cd') {
-          workspace = path.resolve(cwd, args.join(' ') || cwd)
-          operation = 'create'
-          lastRunId = ''
+          workspace = await canonicalDirectory(path.resolve(cwd, args.join(' ') || cwd), { create: true })
+          projectThreads = await app.store.listThreads(workspace)
+          activeThread = projectThreads[0] || await app.store.createThread(workspace, 'New session')
+          lastRunId = String(activeThread.latestRunId || '')
+          operation = lastRunId ? 'edit' : 'create'
           attachments = []
           write(`Workspace changed to ${workspace}`)
+        } else if (command === '/sessions') {
+          projectThreads = await app.store.listThreads(workspace)
+          write([
+            paint('Project sessions', BOLD, color),
+            ...projectThreads.map((thread: any) => `  ${thread.id === activeThread.id ? '•' : ' '} ${thread.title || 'Untitled'}  ${thread.id}${thread.latestRunId ? `  ${thread.latestRunId}` : ''}`),
+          ].join('\n'))
+        } else if (command === '/session') {
+          projectThreads = await app.store.listThreads(workspace)
+          if (args[0] === 'new') {
+            activeThread = await app.store.createThread(workspace, args.slice(1).join(' ') || 'New session')
+          } else {
+            const requested = args[0]
+            if (!requested) throw new Error('Usage: /session new [title] | /session <id>')
+            const matches = projectThreads.filter((thread: any) => thread.id === requested || thread.id.replace(/^thread_/, '').startsWith(requested))
+            if (matches.length !== 1) throw new Error(matches.length ? `Session prefix is ambiguous: ${requested}` : `No session matches ${requested}`)
+            activeThread = matches[0]
+          }
+          lastRunId = String(activeThread.latestRunId || '')
+          operation = lastRunId ? 'edit' : 'create'
+          attachments = []
+          write(`Active session: ${activeThread.title || 'Untitled'} · ${activeThread.id}`)
         } else if (command === '/runs') {
           write(recentRuns(await app.store.list(), color))
         } else if (command === '/details') {

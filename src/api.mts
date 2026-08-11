@@ -2,6 +2,7 @@ import { API_ORIGIN, ENGINE_AGENT_CONTEXT_SCHEMA, ENGINE_CONTRACT_VERSION, ENGIN
 import { sniffImage } from './attachments.mjs'
 import { collectStream, publicError, sha256 } from './util.mjs'
 import type { OrbitClientSource } from './types.mjs'
+import { ORBIT_AGENT_MODEL_OUTPUT_LIMITS } from '@soda_game/orbit-agent-core'
 
 const MAX_JSON_RESPONSE = 8 * 1024 * 1024
 const MAX_IMAGE_RESPONSE = 16 * 1024 * 1024
@@ -94,7 +95,7 @@ export class OrbitApi {
     })
   }
 
-  complete({ cloudRunId, requestKey, purpose = 'agent', messages, tools = [], runtime = 'html', operation = 'create', maxOutputTokens = 16_000, signal }: { cloudRunId: string; requestKey: string; purpose?: string; messages: Record<string, any>[]; tools?: Record<string, any>[]; runtime?: string; operation?: string; maxOutputTokens?: number; signal?: AbortSignal | null }): Promise<any> {
+  complete({ cloudRunId, requestKey, purpose = 'agent', messages, tools = [], runtime = 'html', operation = 'create', maxOutputTokens = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, signal }: { cloudRunId: string; requestKey: string; purpose?: string; messages: Record<string, any>[]; tools?: Record<string, any>[]; runtime?: string; operation?: string; maxOutputTokens?: number; signal?: AbortSignal | null }): Promise<any> {
     return this.request(`/api/engine/runs/${encodeURIComponent(cloudRunId)}/llm`, {
       method: 'POST',
       signal,

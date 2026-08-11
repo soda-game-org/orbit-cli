@@ -6,6 +6,7 @@
  */
 
 import {
+  ORBIT_AGENT_MODEL_OUTPUT_LIMITS,
   assertAgentTranscriptProtocol,
   projectAgentMessagesForProvider,
 } from '@soda_game/orbit-agent-core'
@@ -53,6 +54,8 @@ export interface OrbitProviderModel {
   id: string
   name: string
   vision: boolean
+  /** Provider-declared maximum completion size; absent when the catalog is not authoritative. */
+  maxOutputTokens?: number
 }
 
 export interface OrbitProviderCompletionInput {
@@ -79,7 +82,8 @@ export interface OrbitReplicate3dState extends JsonRecord {
 
 export interface OrbitReplicateImageState extends OrbitReplicate3dState {}
 
-export const DEFAULT_MODEL_OUTPUT_TOKENS = 16_000
+export const DEFAULT_MODEL_OUTPUT_TOKENS = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent
+export const MAX_PROVIDER_OUTPUT_TOKENS = 1_000_000
 export const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
 export const MAX_MODEL_ID_CHARS = 120
 export const REPLICATE_IMAGE_MODEL = 'google/nano-banana'
@@ -153,8 +157,10 @@ export function providerRequestHeaders(provider: OrbitCodingProviderId, token: s
   return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...safeClientHeaders }
 }
 
-function outputLimit(value: unknown, maximum = DEFAULT_MODEL_OUTPUT_TOKENS): number {
-  return Math.min(maximum, Math.max(16, Number(value) || maximum))
+function outputLimit(value: unknown, maximum = MAX_PROVIDER_OUTPUT_TOKENS): number {
+  const numeric = Number(value)
+  if (!Number.isInteger(numeric) || numeric < 16) throw new TypeError('Provider output token limit is invalid')
+  return Math.min(maximum, numeric)
 }
 
 function usageObject(value: unknown): JsonRecord | null {
@@ -226,15 +232,274 @@ export function normalizeProviderUsage(raw: unknown): OrbitProviderUsage | null 
   }
 }
 
-function responsesContent(content: unknown): string | JsonRecord[] {
+function providerPrivateNetworkHostname(hostname: string): boolean {
+  const value = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (!value || value === 'localhost' || value.endsWith('.localhost') || value === '::' || value === '::1' || value.startsWith('::ffff:')) return true
+  const embeddedIpv4 = /(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(value)?.[1]
+  if (embeddedIpv4 && embeddedIpv4 !== value && providerPrivateNetworkHostname(embeddedIpv4)) return true
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value)
+  if (ipv4) {
+    const octets = ipv4.slice(1).map(Number)
+    if (octets.some((part) => part > 255)) return true
+    const first = octets[0] ?? -1
+    const second = octets[1] ?? -1
+    return first === 0 || first === 10 || first === 127 || first >= 224
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 0 && [0, 2].includes(octets[2] ?? -1))
+      || (first === 192 && second === 88 && octets[2] === 99)
+      || (first === 192 && second === 168)
+      || (first === 198 && (second === 18 || second === 19))
+      || (first === 198 && second === 51 && octets[2] === 100)
+      || (first === 203 && second === 0 && octets[2] === 113)
+  }
+  return value.startsWith('fc') || value.startsWith('fd')
+    || value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb')
+    || value.startsWith('ff') || value.startsWith('2001:db8')
+}
+
+function safeProviderImageUrl(value: unknown): string {
+  const source = typeof value === 'string' ? value.trim() : ''
+  if (!source) throw new TypeError('Provider image source is missing')
+  if (source.startsWith('data:')) {
+    if (source.length > 12 * 1024 * 1024
+      || !/^data:image\/(?:png|jpeg|webp|gif|avif);base64,[a-z0-9+/=\r\n]+$/i.test(source)) {
+      throw new TypeError('Provider image data URL is invalid')
+    }
+    return source
+  }
+  if (source.length > 8_192) throw new TypeError('Provider image URL is invalid')
+  let url: URL
+  try {
+    url = new URL(source)
+  } catch {
+    throw new TypeError('Provider image URL is invalid')
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || providerPrivateNetworkHostname(url.hostname)) {
+    throw new TypeError('Provider image URL is invalid')
+  }
+  return url.href
+}
+
+function providerImageSource(part: JsonRecord): { type: 'url' | 'data_url' | 'provider_file'; value: string } {
+  if (part?.type === 'image_url' && typeof part.image_url?.url === 'string') {
+    const value = safeProviderImageUrl(part.image_url.url)
+    return { type: value.startsWith('data:') ? 'data_url' : 'url', value }
+  }
+  if (part?.type !== 'input_image' || !part.source || typeof part.source !== 'object') {
+    throw new TypeError('Provider image content part is invalid')
+  }
+  const type = part.source.type
+  const value = typeof part.source.value === 'string' ? part.source.value.trim() : ''
+  if (type === 'url' || type === 'data_url') {
+    const safe = safeProviderImageUrl(value)
+    if ((type === 'data_url') !== safe.startsWith('data:')) {
+      throw new TypeError('Provider image source type does not match its value')
+    }
+    return { type, value: safe }
+  }
+  if (type === 'provider_file' && /^file-[a-z0-9][a-z0-9._-]{0,250}$/i.test(value)) return { type, value }
+  throw new TypeError('Provider image source must be resolved by the host before transport')
+}
+
+function providerContent(content: unknown, protocol: 'chat-completions' | 'responses'): string | JsonRecord[] {
   if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
+  if (!Array.isArray(content)) throw new TypeError('Provider message content is invalid')
+  return content.map((part, index) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) {
+      throw new TypeError(`Provider content part ${index + 1} is invalid`)
+    }
+    if ((part.type === 'text' || part.type === 'input_text') && typeof part.text === 'string') {
+      return protocol === 'responses'
+        ? { type: 'input_text', text: part.text }
+        : { type: 'text', text: part.text }
+    }
+    const source = providerImageSource(part)
+    const detail = ['auto', 'low', 'high'].includes(part.detail)
+      ? part.detail
+      : ['auto', 'low', 'high'].includes(part.image_url?.detail)
+        ? part.image_url.detail
+        : undefined
+    if (protocol === 'responses') {
+      return source.type === 'provider_file'
+        ? { type: 'input_image', file_id: source.value, ...(detail ? { detail } : {}) }
+        : { type: 'input_image', image_url: source.value, ...(detail ? { detail } : {}) }
+    }
+    if (source.type === 'provider_file') {
+      throw new TypeError('Chat Completions does not accept provider file image references')
+    }
+    return { type: 'image_url', image_url: { url: source.value, ...(detail ? { detail } : {}) } }
+  })
+}
+
+function chatToolCalls(value: unknown): JsonRecord[] {
+  return (Array.isArray(value) ? value : []).map((call) => ({
+    id: call.id,
+    type: 'function',
+    function: { name: call.function.name, arguments: call.function.arguments },
+  }))
+}
+
+const MAX_NATIVE_REASONING_CHARS = 4 * 1024 * 1024
+
+function boundedNativeString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= MAX_NATIVE_REASONING_CHARS ? value : undefined
+}
+
+function nativeHostReference(value: string, anywhere = false): boolean {
+  const source = anywhere ? value : value.trim()
+  const prefix = '(?:file:/{2,3}|data:image|[a-z]:[\\\\/]|/(?:Users|home|private|var|tmp)/)'
+  return anywhere
+    ? new RegExp(`(?:^|[\\s"'\\x60(])${prefix}`, 'i').test(source)
+    : new RegExp(`^${prefix}`, 'i').test(source)
+}
+
+function safeNativeText(value: unknown): string | undefined {
+  const text = boundedNativeString(value)
+  if (text === undefined) return undefined
+  if (nativeHostReference(text, true)) return undefined
+  return text
+}
+
+function safeOpaqueNativeString(value: unknown): string | undefined {
+  const text = boundedNativeString(value)
+  return text !== undefined && !nativeHostReference(text) ? text : undefined
+}
+
+/** Keep only documented, provider-native reasoning fields. Host metadata is never replayed. */
+function nativeReasoningDetails(value: unknown): JsonRecord[] {
+  const details: JsonRecord[] = []
+  for (const raw of Array.isArray(value) ? value : []) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const type = boundedNativeString(raw.type)
+    if (!type) continue
+    const detail: JsonRecord = { type }
+    for (const key of ['id', 'format', 'status', 'signature'] as const) {
+      const text = safeNativeText(raw[key])
+      if (text !== undefined) detail[key] = text
+    }
+    if (Number.isSafeInteger(raw.index) && raw.index >= 0) detail.index = raw.index
+    // These fields are opaque provider state. They are bounded but never recursively inspected.
+    for (const key of ['data', 'encrypted_content'] as const) {
+      const text = safeOpaqueNativeString(raw[key])
+      if (text !== undefined) detail[key] = text
+    }
+    for (const key of ['text', 'summary'] as const) {
+      const text = safeNativeText(raw[key])
+      if (text !== undefined) detail[key] = text
+    }
+    if (Array.isArray(raw.summary)) {
+      const summary = raw.summary.flatMap((part: unknown) => {
+        if (!part || typeof part !== 'object' || Array.isArray(part)) return []
+        const partType = boundedNativeString((part as JsonRecord).type)
+        const text = safeNativeText((part as JsonRecord).text)
+        return partType && text !== undefined ? [{ type: partType, text }] : []
+      })
+      if (summary.length) detail.summary = summary
+    }
+    details.push(detail)
+  }
+  return details
+}
+
+function nativeResponseItems(value: unknown): JsonRecord[] {
   const items: JsonRecord[] = []
-  for (const part of content) {
-    if (part?.type === 'text' && typeof part.text === 'string') items.push({ type: 'input_text', text: part.text })
-    else if (part?.type === 'image_url' && typeof part.image_url?.url === 'string') items.push({ type: 'input_image', image_url: part.image_url.url })
+  for (const raw of Array.isArray(value) ? value : []) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    if (raw.type === 'reasoning') {
+      const item: JsonRecord = { type: 'reasoning' }
+      for (const key of ['id', 'status'] as const) {
+        const text = safeNativeText(raw[key])
+        if (text !== undefined) item[key] = text
+      }
+      const encrypted = safeOpaqueNativeString(raw.encrypted_content)
+      if (encrypted !== undefined) item.encrypted_content = encrypted
+      if (Array.isArray(raw.summary)) {
+        const summary = raw.summary.flatMap((part: unknown) => {
+          if (!part || typeof part !== 'object' || Array.isArray(part)) return []
+          const type = (part as JsonRecord).type === 'summary_text' ? 'summary_text' : undefined
+          const text = safeNativeText((part as JsonRecord).text)
+          return type && text !== undefined ? [{ type, text }] : []
+        })
+        item.summary = summary
+      }
+      items.push(item)
+      continue
+    }
+    if (raw.type === 'message' && raw.role === 'assistant' && Array.isArray(raw.content)) {
+      const content = raw.content.flatMap((part: unknown) => {
+        if (!part || typeof part !== 'object' || Array.isArray(part)) return []
+        const record = part as JsonRecord
+        if (record.type === 'output_text') {
+          const text = boundedNativeString(record.text)
+          return text === undefined ? [] : [{ type: 'output_text', text }]
+        }
+        if (record.type === 'refusal') {
+          const refusal = boundedNativeString(record.refusal)
+          return refusal === undefined ? [] : [{ type: 'refusal', refusal }]
+        }
+        return []
+      })
+      if (!content.length) continue
+      items.push({
+        type: 'message',
+        ...(safeNativeText(raw.id) ? { id: safeNativeText(raw.id) } : {}),
+        role: 'assistant',
+        content,
+        ...(safeNativeText(raw.status) ? { status: safeNativeText(raw.status) } : {}),
+      })
+      continue
+    }
+    if (raw.type === 'function_call') {
+      const callId = safeNativeText(raw.call_id)
+      const name = safeNativeText(raw.name)
+      const args = boundedNativeString(raw.arguments)
+      if (!callId || !name || args === undefined) continue
+      items.push({
+        type: 'function_call',
+        ...(safeNativeText(raw.id) ? { id: safeNativeText(raw.id) } : {}),
+        call_id: callId,
+        name,
+        arguments: args,
+        ...(safeNativeText(raw.status) ? { status: safeNativeText(raw.status) } : {}),
+      })
+    }
+    // Assistant message text is replayed from canonical message.content below.
   }
   return items
+}
+
+/** Build a protocol-native allowlist so host/session/media sidecars cannot cross the wire. */
+function chatMessages(messages: JsonRecord[]): JsonRecord[] {
+  return messages.map((message) => {
+    if (['user', 'system', 'developer'].includes(message.role)) {
+      return {
+        role: message.role,
+        content: providerContent(message.content, 'chat-completions'),
+        ...(typeof message.name === 'string' && message.name ? { name: message.name } : {}),
+      }
+    }
+    if (message.role === 'tool') {
+      return {
+        role: 'tool',
+        tool_call_id: message.tool_call_id,
+        content: message.content,
+        ...(typeof message.name === 'string' && message.name ? { name: message.name } : {}),
+      }
+    }
+    return {
+      role: 'assistant',
+      content: message.content,
+      ...(typeof message.name === 'string' && message.name ? { name: message.name } : {}),
+      ...(Array.isArray(message.tool_calls) ? { tool_calls: chatToolCalls(message.tool_calls) } : {}),
+      ...(safeNativeText(message.reasoning) !== undefined ? { reasoning: safeNativeText(message.reasoning) } : {}),
+      ...(safeNativeText(message.reasoning_content) !== undefined ? { reasoning_content: safeNativeText(message.reasoning_content) } : {}),
+      ...(nativeReasoningDetails(message.reasoning_details).length
+        ? { reasoning_details: nativeReasoningDetails(message.reasoning_details) }
+        : {}),
+    }
+  })
 }
 
 function assertProviderTranscript(messages: unknown): asserts messages is JsonRecord[] {
@@ -284,7 +549,7 @@ function canonicalResponsesAssistantItems(message: JsonRecord): JsonRecord[] {
   const seen = new Set<string>()
   const output: JsonRecord[] = []
   let hasAssistantMessage = false
-  for (const raw of Array.isArray(message.response_items) ? message.response_items : []) {
+  for (const raw of nativeResponseItems(message.response_items)) {
     if (!raw || typeof raw !== 'object' || typeof raw.type !== 'string') continue
     if (raw.type !== 'function_call') {
       if (raw.type === 'function_call_output') continue
@@ -296,7 +561,14 @@ function canonicalResponsesAssistantItems(message: JsonRecord): JsonRecord[] {
     const id = typeof raw.call_id === 'string' ? raw.call_id.trim() : typeof raw.id === 'string' ? raw.id.trim() : ''
     const call = callsById.get(id)
     if (!call || seen.has(id) || typeof call.function?.name !== 'string' || typeof call.function.arguments !== 'string') continue
-    output.push({ ...raw, call_id: id, name: call.function.name, arguments: call.function.arguments })
+    output.push({
+      type: 'function_call',
+      ...(typeof raw.id === 'string' ? { id: raw.id } : {}),
+      call_id: id,
+      name: call.function.name,
+      arguments: call.function.arguments,
+      ...(typeof raw.status === 'string' ? { status: raw.status } : {}),
+    })
     seen.add(id)
   }
   if (!hasAssistantMessage && typeof message.content === 'string' && message.content) {
@@ -331,7 +603,7 @@ export function responsesInput(messages: JsonRecord[]): JsonRecord[] {
       continue
     }
     if (['user', 'system', 'developer'].includes(message.role)) {
-      const content = responsesContent(message.content)
+      const content = providerContent(message.content, 'responses')
       if (typeof content === 'string' || content.length) input.push({ role: message.role, content })
     }
   }
@@ -361,7 +633,7 @@ export function buildProviderRequest({ provider, model, messages, tools = [], sy
     store: false,
   } : {
     model: modelId,
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...providerMessages],
+    messages: [...(system ? [{ role: 'system', content: system }] : []), ...chatMessages(providerMessages)],
     ...(tools.length ? { tools } : {}),
     ...(explicitOutputLimit === undefined ? {} : { max_tokens: explicitOutputLimit }),
     stream: false,
@@ -375,11 +647,12 @@ export function buildProviderRequest({ provider, model, messages, tools = [], sy
 }
 
 function responseAssistant(json: JsonRecord): OrbitProviderAssistant {
-  const responseItems = Array.isArray(json?.output) ? json.output : []
+  const rawResponseItems = Array.isArray(json?.output) ? json.output : []
+  const responseItems = nativeResponseItems(rawResponseItems)
   const content: string[] = []
   const toolCalls: JsonRecord[] = []
   const reasoning: string[] = []
-  for (const item of responseItems) {
+  for (const item of rawResponseItems) {
     if (item?.type === 'message') {
       for (const part of Array.isArray(item.content) ? item.content : []) {
         if (part?.type === 'output_text' && typeof part.text === 'string') content.push(part.text)
@@ -422,7 +695,9 @@ export function parseProviderAssistant(provider: OrbitCodingProviderId, json: un
     ...(Array.isArray(message.tool_calls) ? { tool_calls: message.tool_calls } : {}),
     ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
     ...(typeof message.reasoning === 'string' ? { reasoning: message.reasoning } : {}),
-    ...(Array.isArray(message.reasoning_details) ? { reasoning_details: message.reasoning_details } : {}),
+    ...(nativeReasoningDetails(message.reasoning_details).length
+      ? { reasoning_details: nativeReasoningDetails(message.reasoning_details) }
+      : {}),
     ...(usage ? { usage } : {}),
   }
 }
@@ -433,10 +708,18 @@ export function parseProviderModels(json: unknown): OrbitProviderModel[] {
   for (const item of Array.isArray(body.data) ? body.data : []) {
     const id = typeof item?.id === 'string' ? item.id.trim() : ''
     if (!id || id.length > MAX_MODEL_ID_CHARS || /[\u0000-\u001f\u007f]/.test(id)) continue
+    const declaredOutputLimit = Number(
+      item.top_provider?.max_completion_tokens
+      ?? item.architecture?.max_completion_tokens,
+    )
+    const maxOutputTokens = Number.isSafeInteger(declaredOutputLimit) && declaredOutputLimit >= 16
+      ? Math.min(MAX_PROVIDER_OUTPUT_TOKENS, declaredOutputLimit)
+      : undefined
     models.push({
       id,
       name: typeof item.name === 'string' ? item.name.slice(0, 160) : id,
       vision: Array.isArray(item.architecture?.input_modalities) && item.architecture.input_modalities.includes('image'),
+      ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     })
     if (models.length >= 2_000) break
   }

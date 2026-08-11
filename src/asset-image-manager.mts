@@ -16,24 +16,33 @@ export class AssetImageManager {
   async create(input: Record<string, any>): Promise<OrbitRun> {
     await this.auth.accessToken()
     const config = await this.config.get()
+    const workspace = await canonicalDirectory(input.workspace, { create: true })
+    const workspaceRelease = typeof this.store.acquireWorkspace === 'function'
+      ? await this.store.acquireWorkspace(workspace)
+      : async () => undefined
+    let transferred = false
+    try {
     const run = await this.store.create({
       source: input.source === 'cli_gui' ? 'cli_gui' : 'cli',
       operation: 'create',
       prompt: boundedString(input.prompt, 'Image prompt', 8_000),
-      workspace: await canonicalDirectory(input.workspace, { create: true }),
+      workspace,
       mode: 'orbit',
       provider: null,
       runtime: 'html',
       generateImages: true,
       cloudLogs: input.cloudLogs ?? config.cloudLogs,
       references: [],
+      kind: 'assetimage',
+      assetImage: {},
+      assetOutput: typeof input.output === 'string' && input.output.trim() ? input.output.trim() : 'assets/images/generated.png',
+      assetAspectRatio: ['1:1', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : '1:1',
     })
-    run.kind = 'assetimage'
-    run.assetImage = {}
-    run.assetOutput = typeof input.output === 'string' && input.output.trim() ? input.output.trim() : 'assets/images/generated.png'
-    run.assetAspectRatio = ['1:1', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : '1:1'
-    await this.store.save(run)
-    return this.execute(run.id, { retryUnsafe: false })
+    transferred = true
+    return this.execute(run.id, { retryUnsafe: false, workspaceRelease })
+    } finally {
+      if (!transferred) await workspaceRelease()
+    }
   }
 
   async resume(runId: string, { retryUnsafe = false }: { retryUnsafe?: boolean } = {}): Promise<OrbitRun> {
@@ -52,14 +61,20 @@ export class AssetImageManager {
     return this.execute(runId, { retryUnsafe })
   }
 
-  async execute(runId: string, { retryUnsafe = false }: { retryUnsafe?: boolean } = {}): Promise<OrbitRun> {
-    const release = await this.store.acquire(runId)
+  async execute(runId: string, { retryUnsafe = false, workspaceRelease: suppliedWorkspaceRelease = null }: { retryUnsafe?: boolean; workspaceRelease?: (() => Promise<void>) | null } = {}): Promise<OrbitRun> {
+    let release: (() => Promise<void>) | null = null
+    let workspaceRelease = suppliedWorkspaceRelease
     const controller = new AbortController()
     const interrupt = () => controller.abort(new Error('Interrupted by user'))
     process.once('SIGINT', interrupt)
     process.once('SIGTERM', interrupt)
     let run: OrbitRun | undefined
     try {
+      if (!workspaceRelease && typeof this.store.acquireWorkspace === 'function') {
+        const initial = await this.store.load(runId)
+        workspaceRelease = await this.store.acquireWorkspace(initial.workspace)
+      }
+      release = await this.store.acquire(runId)
       run = await this.store.load(runId)
       if (!run) throw new Error(`Run checkpoint is missing: ${runId}`)
       if (run.state === 'completed') {
@@ -105,7 +120,7 @@ export class AssetImageManager {
     } finally {
       process.removeListener('SIGINT', interrupt)
       process.removeListener('SIGTERM', interrupt)
-      await release()
+      try { if (release) await release() } finally { if (workspaceRelease) await workspaceRelease() }
     }
   }
 

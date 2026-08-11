@@ -1,5 +1,11 @@
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
-import type { OrbitAgentExecutionState, OrbitAgentToolBatchJournal } from '@soda_game/orbit-agent-core'
+import type {
+  OrbitAgentExecutionState,
+  OrbitAgentInputItem,
+  OrbitAgentMediaCache,
+  OrbitAgentMediaObservation,
+  OrbitAgentToolBatchJournal,
+} from '@soda_game/orbit-agent-core'
 
 export type OrbitClientSource = 'cli' | 'cli_gui'
 export type OrbitMode = 'orbit' | 'byok'
@@ -51,6 +57,7 @@ export interface OrbitRun extends Record<string, any> {
   operation: OrbitOperation
   prompt: string
   workspace: string
+  historicalWorkspaceRoots?: string[]
   mode: OrbitMode
   provider: OrbitCodingProviderId | null
   model: string
@@ -64,11 +71,28 @@ export interface OrbitRun extends Record<string, any> {
   finishedAt: string | null
   sequence: number
   iteration: number
+  threadId?: string
+  turnId?: string
   messages: OrbitMessage[]
+  turnOutputMessages?: OrbitMessage[]
+  inputItems?: OrbitAgentInputItem[]
+  mediaObservations?: OrbitAgentMediaObservation[]
+  mediaCache?: OrbitAgentMediaCache
+  visionCapability?: { provider: OrbitCodingProviderId | 'orbit'; model: string; vision: boolean; maxOutputTokens?: number; confirmedAt: string }
+  turnInputProjected?: boolean
   references: OrbitReference[]
   referenceSummary: string | null
   plan: Record<string, any> | null
   cloudRunId: string | null
+  pendingSemanticCompaction?: {
+    schema: 'orbit.cli-semantic-compaction.v1'
+    sourceFingerprint: string
+    generation: number
+    requestKey: string
+    status: 'pending' | 'ready'
+    rawSemanticSummary?: string
+  } | null
+  compactionDeferredFingerprint?: string | null
   pendingModelCall: Record<string, any> | null
   pendingTool: { id: string; name: string; arguments: string; startedAt: string } | null
   pendingToolBatch?: OrbitAgentToolBatchJournal | null
@@ -85,6 +109,7 @@ export interface OrbitRunCreateInput extends Record<string, any> {
   operation?: OrbitOperation
   prompt?: string
   workspace: string
+  historicalWorkspaceRoots?: string[]
   mode?: OrbitMode
   provider?: OrbitCodingProviderId | null
   model?: string
@@ -93,6 +118,18 @@ export interface OrbitRunCreateInput extends Record<string, any> {
   generate3d?: boolean
   cloudLogs?: boolean
   references?: OrbitReference[]
+  messages?: OrbitMessage[]
+  threadId?: string
+  turnId?: string
+  inputItems?: OrbitAgentInputItem[]
+  mediaObservations?: OrbitAgentMediaObservation[]
+  mediaCache?: OrbitAgentMediaCache
+  visionCapability?: OrbitRun['visionCapability']
+  kind?: 'assetimage' | 'asset3d'
+  assetImage?: Record<string, any>
+  asset3d?: Record<string, any>
+  assetOutput?: string
+  assetAspectRatio?: string
 }
 
 export function asError(error: unknown): Error & { code?: string; status?: number; details?: unknown } {

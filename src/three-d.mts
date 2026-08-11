@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { providerCredentialAccount } from './credentials.mjs'
-import { collectStream, id, isContained, sha256, sleep } from './util.mjs'
+import { collectStream, durableAtomicWriteFile, id, isContained, sha256, sleep } from './util.mjs'
 import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '@soda_game/orbit-provider-core'
 import type { CredentialStore } from './credentials.mjs'
 import type { OrbitApi } from './api.mjs'
@@ -65,9 +65,7 @@ async function writeGlb(prepared: { root: string; target: string }, bytes: Buffe
   const { root, target } = prepared
   const parent = path.dirname(target)
   if (await fs.realpath(parent) !== parent || !isContained(root, parent)) throw new Error('3D output directory changed while generating')
-  const temporary = `${target}.${process.pid}.tmp`
-  await fs.writeFile(temporary, bytes, { mode: 0o644, flag: 'wx' })
-  await fs.rename(temporary, target)
+  await durableAtomicWriteFile(target, bytes)
   return { path: target, relativePath: path.relative(root, target).split(path.sep).join('/'), sha256: sha256(bytes), bytes: bytes.byteLength }
 }
 

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import test from 'node:test'
 import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
 import { ByokProvider } from '../src/provider.mjs'
 import {
+  DEFAULT_MODEL_OUTPUT_TOKENS,
+  MAX_PROVIDER_OUTPUT_TOKENS,
   buildProviderRequest,
   generateReplicateImage,
   generateReplicateModel3d,
@@ -11,6 +14,11 @@ import {
   parseProviderAssistant,
   validateReplicateDeliveryUrl,
 } from '@soda_game/orbit-provider-core'
+import {
+  ORBIT_AGENT_MODEL_OUTPUT_LIMITS,
+  assertAgentInputProjectionReady,
+  projectAgentInputItemsForProvider,
+} from '@soda_game/orbit-agent-core'
 
 class MemoryCredentials {
   constructor(entries = {}) { this.entries = new Map(Object.entries(entries)) }
@@ -29,6 +37,32 @@ test('provider profiles keep regional services and credentials separate', () => 
   assert.equal(PROVIDERS.deepseek.defaultModel, 'deepseek-v4-pro')
   assert.notEqual(providerCredentialAccount('zhipu-cn'), providerCredentialAccount('zai'))
   assert.notEqual(providerCredentialAccount('kimi-cn'), providerCredentialAccount('kimi-global'))
+  assert.equal(DEFAULT_MODEL_OUTPUT_TOKENS, ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent)
+  assert.equal(DEFAULT_MODEL_OUTPUT_TOKENS, 65_536)
+})
+
+test('explicit provider output budgets preserve the shared reasoning allowance', () => {
+  const chat = buildProviderRequest({
+    provider: 'deepseek', model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'Build.' }],
+    maxOutputTokens: ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent,
+  })
+  assert.equal(chat.body.max_tokens, 65_536)
+
+  const responses = buildProviderRequest({
+    provider: 'openai', model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'Build.' }],
+    maxOutputTokens: ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent,
+  })
+  assert.equal(responses.body.max_output_tokens, 65_536)
+
+  const bounded = buildProviderRequest({
+    provider: 'deepseek', model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'Build.' }],
+    maxOutputTokens: MAX_PROVIDER_OUTPUT_TOKENS + 1,
+  })
+  assert.equal(bounded.body.max_tokens, MAX_PROVIDER_OUTPUT_TOKENS)
+  assert.throws(() => buildProviderRequest({
+    provider: 'deepseek', model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'Build.' }],
+    maxOutputTokens: 0,
+  }), /output token limit is invalid/)
 })
 
 test('normalizes Chat, Responses and DeepSeek token usage without exposing raw cost data', () => {
@@ -181,7 +215,7 @@ test('chat-completions profiles send each key only to its fixed regional host', 
 test('Chat and Responses provider boundaries strip host-only message metadata without losing native fields', () => {
   const internal = { schema: 'orbit.agent-internal-message.v1', type: 'context_summary', generation: 1 }
   const messages = [
-    { role: 'user', content: 'Inspect', orbit_internal: internal },
+    { role: 'user', content: 'Inspect', orbit_internal: internal, sessionId: 'session_private', localPath: '/private/reference.png' },
     {
       role: 'assistant',
       content: 'Working.',
@@ -190,18 +224,27 @@ test('Chat and Responses provider boundaries strip host-only message metadata wi
       response_items: [{ type: 'reasoning', id: 'reasoning_1', encrypted_content: 'opaque' }],
       tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
       orbit_internal: internal,
+      projectId: 'project_private',
     },
-    { role: 'tool', tool_call_id: 'call_1', content: 'ok', orbit_internal: internal },
+    { role: 'tool', tool_call_id: 'call_1', content: 'ok', orbit_internal: internal, mediaId: 'media_private' },
   ]
   const chat = buildProviderRequest({ provider: 'deepseek', messages })
   assert.equal(JSON.stringify(chat.body).includes('orbit_internal'), false)
+  assert.equal(JSON.stringify(chat.body).includes('session_private'), false)
+  assert.equal(JSON.stringify(chat.body).includes('project_private'), false)
+  assert.equal(JSON.stringify(chat.body).includes('media_private'), false)
+  assert.equal(JSON.stringify(chat.body).includes('/private/reference.png'), false)
   assert.equal(chat.body.messages[1].reasoning, 'visible reasoning')
   assert.deepEqual(chat.body.messages[1].reasoning_details, messages[1].reasoning_details)
-  assert.deepEqual(chat.body.messages[1].response_items, messages[1].response_items)
+  assert.equal(Object.hasOwn(chat.body.messages[1], 'response_items'), false)
   assert.deepEqual(chat.body.messages[1].tool_calls, messages[1].tool_calls)
 
   const responses = buildProviderRequest({ provider: 'openai', messages })
   assert.equal(JSON.stringify(responses.body).includes('orbit_internal'), false)
+  assert.equal(JSON.stringify(responses.body).includes('session_private'), false)
+  assert.equal(JSON.stringify(responses.body).includes('project_private'), false)
+  assert.equal(JSON.stringify(responses.body).includes('media_private'), false)
+  assert.equal(JSON.stringify(responses.body).includes('/private/reference.png'), false)
   assert.deepEqual(responses.body.input[1], messages[1].response_items[0])
   assert.deepEqual(responses.body.input[2], { role: 'assistant', content: 'Working.' })
   assert.deepEqual(responses.body.input[3], {
@@ -210,6 +253,156 @@ test('Chat and Responses provider boundaries strip host-only message metadata wi
     name: 'read_file',
     arguments: '{}',
   })
+})
+
+test('provider-native reasoning replay recursively strips host metadata while preserving opaque protocol state', () => {
+  const developerRoot = path.join(path.parse(process.cwd()).root, 'Users', 'private')
+  const referencePath = path.join(developerRoot, 'reference.png')
+  const nestedLeak = {
+    metadata: {
+      privatePath: referencePath,
+      nested: { sourceRef: `file://${referencePath}`, deeper: { dataUrl: 'data:image/png;base64,c2VjcmV0' } },
+    },
+  }
+  const chat = buildProviderRequest({
+    provider: 'openrouter',
+    messages: [
+      { role: 'user', content: 'Continue' },
+      {
+        role: 'assistant', content: '',
+        reasoning_details: [{
+          type: 'reasoning.encrypted', id: 'reasoning_1', data: 'opaque-chat-state', index: 0,
+          ...nestedLeak,
+        }, { type: 'reasoning.encrypted', data: path.join(developerRoot, 'opaque-bypass') }],
+        reasoning: `unsafe host file://${path.join(developerRoot, 'reasoning.txt')}`,
+        reasoning_content: 'C:\\Users\\private\\reasoning.txt',
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'ok' },
+    ],
+  })
+  const chatWire = JSON.stringify(chat.body)
+  assert.equal(chatWire.includes('privatePath'), false)
+  assert.equal(chatWire.includes('sourceRef'), false)
+  assert.equal(chatWire.includes(developerRoot), false)
+  assert.equal(chatWire.includes('file:///'), false)
+  assert.equal(chatWire.includes('data:image'), false)
+  assert.equal(chatWire.includes('opaque-chat-state'), true)
+
+  const responses = buildProviderRequest({
+    provider: 'openai',
+    messages: [
+      { role: 'user', content: 'Continue' },
+      {
+        role: 'assistant', content: 'Working.',
+        response_items: [{
+          type: 'reasoning', id: 'reasoning_2', encrypted_content: 'opaque-responses-state', status: 'completed',
+          summary: [{ type: 'summary_text', text: 'Safe summary', ...nestedLeak }],
+          ...nestedLeak,
+        }, { type: 'reasoning', id: 'reasoning_3', encrypted_content: path.join(developerRoot, 'opaque-bypass') }],
+      },
+    ],
+  })
+  const responsesWire = JSON.stringify(responses.body)
+  assert.equal(responsesWire.includes('privatePath'), false)
+  assert.equal(responsesWire.includes('sourceRef'), false)
+  assert.equal(responsesWire.includes(developerRoot), false)
+  assert.equal(responsesWire.includes('file:///'), false)
+  assert.equal(responsesWire.includes('data:image'), false)
+  assert.equal(responsesWire.includes('opaque-responses-state'), true)
+  assert.equal(responsesWire.includes('Safe summary'), true)
+  assert.equal(chat.body.messages[1].reasoning, undefined)
+  assert.equal(chat.body.messages[1].reasoning_content, undefined)
+})
+
+test('canonical turn input projection becomes protocol-native image parts without leaking host identity', () => {
+  const projection = projectAgentInputItemsForProvider([
+    { id: 'input_text_1', type: 'text', text: 'Inspect this image.' },
+    {
+      id: 'input_image_1',
+      type: 'attachment',
+      detail: 'high',
+      attachment: { id: 'media_1', kind: 'image', mediaType: 'image/png', sourceRef: 'host-asset:media_1' },
+    },
+  ], {
+    capabilities: { vision: true, imageInputs: ['url'], maxImagesPerTurn: 8 },
+    mediaCache: {
+      schema: 'orbit.agent-media-cache.v1',
+      entries: [{
+        key: 'media_1', attachmentId: 'media_1', sourceItemId: 'input_image_1', status: 'ready',
+        mediaType: 'image/png', resolved: { type: 'url', value: 'https://assets.example.com/reference.png' },
+      }],
+    },
+  })
+  assert.equal(projection.blocked, false)
+  assert.equal(assertAgentInputProjectionReady(projection), true)
+  const messages = [{
+    role: 'user',
+    content: projection.providerItems,
+    inputItems: projection.inputItems,
+    mediaObservations: [],
+  }]
+
+  const chat = buildProviderRequest({ provider: 'openrouter', messages })
+  assert.deepEqual(chat.body.messages[0].content, [
+    { type: 'text', text: 'Inspect this image.' },
+    { type: 'image_url', image_url: { url: 'https://assets.example.com/reference.png', detail: 'auto' } },
+  ])
+  assert.equal(JSON.stringify(chat.body).includes('sourceItemId'), false)
+  assert.equal(JSON.stringify(chat.body).includes('media_1'), false)
+
+  const responses = buildProviderRequest({ provider: 'openai', messages })
+  assert.deepEqual(responses.body.input[0], {
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'Inspect this image.' },
+      { type: 'input_image', image_url: 'https://assets.example.com/reference.png', detail: 'auto' },
+    ],
+  })
+  assert.equal(JSON.stringify(responses.body).includes('sourceItemId'), false)
+  assert.equal(JSON.stringify(responses.body).includes('media_1'), false)
+})
+
+test('provider boundary rejects unresolved host media and unsafe image sources', () => {
+  const base = { role: 'user' }
+  for (const provider of ['openrouter', 'openai']) {
+    assert.throws(() => buildProviderRequest({
+      provider,
+      messages: [{ ...base, content: [{ type: 'input_image', sourceItemId: 'input_1', source: { type: 'host_ref', value: 'local-cache:1' }, detail: 'auto' }] }],
+    }), /resolved by the host/i)
+    assert.throws(() => buildProviderRequest({
+      provider,
+      messages: [{ ...base, content: [{ type: 'input_image', sourceItemId: 'input_1', source: { type: 'url', value: 'file:///private/reference.png' }, detail: 'auto' }] }],
+    }), /image URL is invalid/i)
+    assert.throws(() => buildProviderRequest({
+      provider,
+      messages: [{ ...base, content: [{ type: 'localImage', sourceItemId: 'input_1', path: '/private/reference.png' }] }],
+    }), /image content part is invalid/i)
+    for (const host of ['127.0.0.1', '0.0.0.0', '100.64.0.1', '198.18.0.1', '[::]', '[::ffff:127.0.0.1]', '[fc00::1]', '[ff02::1]']) {
+      assert.throws(() => buildProviderRequest({
+        provider,
+        messages: [{ ...base, content: [{ type: 'image_url', image_url: { url: `https://${host}/private.png` } }] }],
+      }), /image URL is invalid/i)
+    }
+  }
+})
+
+test('provider file image references are Responses-only and never accept host references', () => {
+  const providerFile = [{ type: 'input_image', sourceItemId: 'input_1', source: { type: 'provider_file', value: 'file-abc_123' }, detail: 'low' }]
+  const responses = buildProviderRequest({ provider: 'openai', messages: [{ role: 'user', content: providerFile }] })
+  assert.deepEqual(responses.body.input[0], {
+    role: 'user',
+    content: [{ type: 'input_image', file_id: 'file-abc_123', detail: 'low' }],
+  })
+  assert.equal(JSON.stringify(responses.body).includes('sourceItemId'), false)
+
+  assert.throws(() => buildProviderRequest({
+    provider: 'openrouter', messages: [{ role: 'user', content: providerFile }],
+  }), /does not accept provider file/i)
+  assert.throws(() => buildProviderRequest({
+    provider: 'openai',
+    messages: [{ role: 'user', content: [{ type: 'input_image', source: { type: 'provider_file', value: 'local-cache:1' } }] }],
+  }), /resolved by the host/i)
 })
 
 test('OpenAI direct uses Responses API and translates the agent tool transcript', async () => {
@@ -330,8 +523,8 @@ test('OpenRouter model discovery returns bounded tool-capable catalog entries', 
     fetchImpl: async (url, init) => {
       request = { url, init }
       return new Response(JSON.stringify({ data: [
-        { id: 'vendor/model-a', name: 'Model A', architecture: { input_modalities: ['text', 'image'] } },
-        { id: 'vendor/model-b', name: 'Model B', architecture: { input_modalities: ['text'] } },
+        { id: 'vendor/model-a', name: 'Model A', architecture: { input_modalities: ['text', 'image'] }, top_provider: { max_completion_tokens: 131_072 } },
+        { id: 'vendor/model-b', name: 'Model B', architecture: { input_modalities: ['text'], max_completion_tokens: 32_768 } },
         { id: `vendor/${'x'.repeat(121)}`, name: 'Too long' },
         { id: 'bad\nmodel', name: 'Control character' },
       ] }), { status: 200 })
@@ -342,8 +535,8 @@ test('OpenRouter model discovery returns bounded tool-capable catalog entries', 
   assert.equal(request.url, 'https://openrouter.ai/api/v1/models?supported_parameters=tools')
   assert.equal(request.init.headers.Authorization, 'Bearer router-key')
   assert.deepEqual(models, [
-    { id: 'vendor/model-a', name: 'Model A', vision: true },
-    { id: 'vendor/model-b', name: 'Model B', vision: false },
+    { id: 'vendor/model-a', name: 'Model A', vision: true, maxOutputTokens: 131_072 },
+    { id: 'vendor/model-b', name: 'Model B', vision: false, maxOutputTokens: 32_768 },
   ])
 })
 

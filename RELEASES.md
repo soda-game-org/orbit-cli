@@ -1,5 +1,29 @@
 # Release integrity
 
+## v0.2.0
+
+This release adds a canonical Project → Session/Thread → Turn → Run/Attempt
+conversation model to the terminal and local Web CLI. One workspace can now
+hold multiple independent Sessions, while existing `runs/<id>/checkpoint.json`
+and `events.jsonl` records remain readable in place through lazy, idempotent
+indexing and recovery.
+
+Media input now uses canonical per-item identity: repeated occurrences stay
+distinct even when they share one verified attachment blob, text-only models
+receive one structured observation per item, and vision-capable providers see
+image bytes only in bounded, transient request projections. Provider changes,
+failed observations, image limits, host paths, and native reasoning state all
+fail closed at their explicit trust boundaries.
+
+The storage-neutral shared agent core now defines canonical lifecycle objects,
+preserves complete tool-call batches atomically, keeps semantic compaction
+compatible with visual Turn context, and applies the same execution, plan,
+finish, and safety contracts across hosts. Orbit CLI persists those contracts
+with durable run/turn/attempt and workspace-relocation recovery records.
+Managed agent calls retain the full 65,536-token output allowance needed by
+reasoning-heavy models, with DeepSeek V4 Pro remaining the truthful default
+display and request fallback.
+
 ## v0.1.14
 
 This release moves portable Agent policy and provider transport into audited,

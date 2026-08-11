@@ -9,9 +9,176 @@ export interface OrbitProAgentTodo {
 }
 
 export const ORBIT_AGENT_MODEL_OUTPUT_LIMITS: Readonly<{
-  agent: 16_000
+  agent: 65_536
   referenceMedia: 4_096
 }>
+
+export interface OrbitAgentInputItemBase {
+  schema: 'orbit.agent-input-item.v1'
+  id: string
+  createdAt?: string
+  metadata?: Record<string, unknown>
+}
+
+export type OrbitAgentInputItem =
+  | (OrbitAgentInputItemBase & { type: 'text'; text: string })
+  | (OrbitAgentInputItemBase & {
+      type: 'image'
+      /** Inline raster data URL. Remote Web media is represented as an attachment and resolved through MediaCache. */
+      url: string
+      mediaId?: string
+      attachmentId?: string
+      mediaType?: string
+      detail?: 'auto' | 'low' | 'high'
+    })
+  | (OrbitAgentInputItemBase & {
+      type: 'localImage'
+      path: string
+      mediaId: string
+      attachmentId?: string
+      mediaType?: string
+      detail?: 'auto' | 'low' | 'high'
+    })
+  | (OrbitAgentInputItemBase & {
+      type: 'attachment'
+      attachment: {
+        id: string
+        kind: 'image' | 'document' | 'audio' | 'video' | 'archive' | 'other'
+        name?: string
+        mediaType?: string
+        sizeBytes?: number
+        digest?: string
+        sourceRef?: string
+      }
+      observationId?: string
+    })
+  | (OrbitAgentInputItemBase & {
+      type: 'ref'
+      ref: {
+        id: string
+        kind: 'attachment' | 'media' | 'turn' | 'project' | 'external'
+        targetId: string
+        label?: string
+      }
+      observationId?: string
+    })
+
+export interface OrbitAgentMediaObservationFact {
+  id: string
+  text: string
+  label?: string
+  confidence?: number
+  sourceRef?: string
+}
+
+export interface OrbitAgentMediaObservation {
+  schema: 'orbit.agent-media-observation.v1'
+  id: string
+  attachmentId?: string
+  mediaId?: string
+  kind: 'image' | 'document' | 'audio' | 'video' | 'archive' | 'other'
+  status: 'ready' | 'partial' | 'unavailable' | 'failed'
+  summary: string
+  facts: OrbitAgentMediaObservationFact[]
+  mediaType?: string
+  digest?: string
+  createdAt?: string
+}
+
+export interface OrbitAgentMediaCacheEntry {
+  key: string
+  mediaId?: string
+  attachmentId?: string
+  sourceItemId?: string
+  status: 'ready' | 'missing' | 'failed'
+  resolved: null | {
+    type: 'url' | 'data_url' | 'provider_file' | 'host_ref'
+    value: string
+  }
+  observationId?: string
+  mediaType?: string
+  digest?: string
+  updatedAt?: string
+}
+
+export interface OrbitAgentMediaCache {
+  schema: 'orbit.agent-media-cache.v1'
+  entries: OrbitAgentMediaCacheEntry[]
+}
+
+export interface OrbitAgentProject {
+  schema: 'orbit.agent-project.v1'
+  id: string
+  name?: string
+  rootRef?: string
+  threadIds: string[]
+  createdAt?: string
+  updatedAt?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface OrbitAgentTurn {
+  schema: 'orbit.agent-turn.v1'
+  id: string
+  threadId?: string
+  sequence?: number
+  state: 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  inputItems: OrbitAgentInputItem[]
+  outputMessages: OrbitAgentMessage[]
+  createdAt?: string
+  completedAt?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface OrbitAgentThread {
+  schema: 'orbit.agent-thread.v1'
+  id: string
+  projectId?: string
+  title?: string
+  turns: OrbitAgentTurn[]
+  createdAt?: string
+  updatedAt?: string
+  metadata?: Record<string, unknown>
+}
+
+export type OrbitAgentSession = OrbitAgentThread
+
+export interface OrbitAgentProviderCapabilities {
+  schema: 'orbit.agent-provider-capability.v1'
+  vision: boolean
+  imageInputs: Array<'url' | 'data_url' | 'provider_file' | 'host_ref'>
+  nativeAttachments: boolean
+  maxImagesPerTurn: number
+}
+
+export type OrbitAgentProviderInputItem =
+  | { type: 'input_text'; sourceItemId: string; text: string; structured?: boolean; attachmentId?: string; mediaId?: string; refId?: string }
+  | {
+      type: 'input_image'
+      sourceItemId: string
+      attachmentId?: string
+      mediaId?: string
+      refId?: string
+      source: { type: 'url' | 'data_url' | 'provider_file' | 'host_ref'; value: string }
+      detail: 'auto' | 'low' | 'high'
+    }
+
+export interface OrbitAgentInputProjectionIssue {
+  code: 'invalid_input_item' | 'image_limit' | 'media_unresolved' | 'media_source_unsupported' | 'media_observation_missing' | 'media_observation_error'
+  severity: 'warning' | 'error'
+  sourceItemId: string
+  attachmentId?: string
+  message: string
+}
+
+export interface OrbitAgentInputProjection {
+  schema: 'orbit.agent-input-projection.v1'
+  capabilities: OrbitAgentProviderCapabilities
+  inputItems: OrbitAgentInputItem[]
+  providerItems: OrbitAgentProviderInputItem[]
+  issues: OrbitAgentInputProjectionIssue[]
+  blocked: boolean
+}
 
 export interface OrbitAgentExecutionPolicy {
   maxIterations: number
@@ -215,6 +382,7 @@ export interface OrbitAgentCompactionPreparation {
   }
   canonicalMessages: OrbitAgentMessage[]
   firstUser: OrbitAgentMessage | null
+  latestTurnUser?: OrbitAgentMessage | null
   previousSummary?: OrbitAgentSemanticSummary | null
   recentUserMessages: OrbitAgentMessage[]
   tailBlocks: OrbitAgentMessage[][]
@@ -351,8 +519,18 @@ export interface OrbitAgentConversationTransition {
   recoveredSteers?: OrbitAgentConversationInput[]
 }
 
-export const ORBIT_PRO_AGENT_CORE_VERSION: string
+export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.0'
+/** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
+export const ORBIT_PRO_AGENT_CORE_VERSION: typeof ORBIT_AGENT_CORE_VERSION
 export const ORBIT_AGENT_EXECUTION_POLICY: Readonly<OrbitAgentExecutionPolicy>
+export const ORBIT_AGENT_PROJECT_SCHEMA: 'orbit.agent-project.v1'
+export const ORBIT_AGENT_THREAD_SCHEMA: 'orbit.agent-thread.v1'
+export const ORBIT_AGENT_TURN_SCHEMA: 'orbit.agent-turn.v1'
+export const ORBIT_AGENT_INPUT_ITEM_SCHEMA: 'orbit.agent-input-item.v1'
+export const ORBIT_AGENT_MEDIA_OBSERVATION_SCHEMA: 'orbit.agent-media-observation.v1'
+export const ORBIT_AGENT_MEDIA_CACHE_SCHEMA: 'orbit.agent-media-cache.v1'
+export const ORBIT_AGENT_PROVIDER_CAPABILITY_SCHEMA: 'orbit.agent-provider-capability.v1'
+export const ORBIT_AGENT_INPUT_PROJECTION_SCHEMA: 'orbit.agent-input-projection.v1'
 export const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA: 'orbit.agent-tool-capability.v1'
 export const ORBIT_AGENT_TOOL_CAPABILITY: unique symbol
 export const ORBIT_AGENT_RENDER_SURFACE_CONTRACT: string
@@ -367,6 +545,46 @@ export const ORBIT_VISUAL_PLAN_MAX_CANDIDATES: 3
 export const ORBIT_LOOP_ITERATION_POLICY: Readonly<OrbitLoopIterationPolicy>
 export const ORBIT_PRO_AGENT_CONTEXT_POLICY: Readonly<OrbitProContextPolicy>
 export const ORBIT_PRO_AGENT_CONVERSATION_POLICY: Readonly<OrbitProAgentConversationPolicy>
+
+export function normalizeAgentInputItem(
+  raw: unknown,
+  options?: { fallbackId?: string; index?: number },
+): OrbitAgentInputItem | null
+export function normalizeAgentInputItems(
+  raw: unknown,
+  options?: { fallbackId?: string },
+): OrbitAgentInputItem[]
+export function normalizeAgentMediaObservation(
+  raw: unknown,
+  options?: { attachmentId?: string; mediaId?: string },
+): OrbitAgentMediaObservation | null
+export function normalizeAgentMediaCache(raw: unknown): OrbitAgentMediaCache
+export function normalizeAgentProject(raw: unknown): OrbitAgentProject | null
+export function normalizeAgentTurn(raw: unknown, options?: { threadId?: string }): OrbitAgentTurn | null
+export function normalizeAgentThread(raw: unknown): OrbitAgentThread | null
+/** Session is a compatibility name for the canonical Thread entity. */
+export function normalizeAgentSession(raw: unknown): OrbitAgentSession | null
+export function normalizeAgentProviderCapabilities(raw?: unknown): OrbitAgentProviderCapabilities
+export function projectAgentInputItemsForProvider(
+  rawItems: unknown,
+  options?: {
+    capabilities?: unknown
+    providerCapabilities?: unknown
+    observations?: unknown
+    mediaCache?: unknown
+  },
+): OrbitAgentInputProjection
+export function assertAgentInputProjectionReady(projection: OrbitAgentInputProjection): true
+export function projectAgentTurnForProvider(
+  rawTurn: unknown,
+  options?: {
+    threadId?: string
+    capabilities?: unknown
+    providerCapabilities?: unknown
+    observations?: unknown
+    mediaCache?: unknown
+  },
+): OrbitAgentInputProjection & { turn: OrbitAgentTurn }
 
 export function normalizeAgentToolCapability(raw?: unknown): Readonly<OrbitAgentToolCapability>
 export function defineAgentToolCapability<T extends Record<string, unknown>>(
@@ -626,4 +844,6 @@ export function compactAgentMessagesIfNeeded(
   },
 ): OrbitAgentCompactionResult
 
+export function buildOrbitAgentCoreModuleSource(): string
+/** @deprecated Use buildOrbitAgentCoreModuleSource. */
 export function buildOrbitProAgentCoreModuleSource(): string

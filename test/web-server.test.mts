@@ -10,6 +10,15 @@ test('protects management APIs and isolates preview content on another origin', 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-web-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const directories = { config: path.join(root, 'config'), data: path.join(root, 'data') }
+  const uploadRoot = path.join(directories.data, 'web-uploads')
+  const oldUpload = path.join(uploadRoot, 'aaaaaaaaaaaaaaaaaaaaaaaa')
+  const activeUpload = path.join(uploadRoot, 'bbbbbbbbbbbbbbbbbbbbbbbb')
+  await fs.mkdir(oldUpload, { recursive: true })
+  await fs.mkdir(activeUpload, { recursive: true })
+  await fs.writeFile(path.join(oldUpload, '0.png'), 'orphan')
+  await fs.writeFile(path.join(activeUpload, '0.png'), 'active')
+  const oldTime = new Date(Date.now() - 2 * 60 * 60_000)
+  await fs.utimes(oldUpload, oldTime, oldTime)
   const workspace = path.join(root, 'workspace')
   await fs.mkdir(workspace)
   await fs.writeFile(path.join(workspace, 'index.html'), '<!doctype html><title>Preview</title>')
@@ -34,8 +43,15 @@ test('protects management APIs and isolates preview content on another origin', 
     return { id: 'run_11111111-1111-4111-8111-111111111111', state: 'completed', result: { relativePath: input.output } }
   } }
   let streamedInput
+  let uploadRemovedDuringRun = false
   const manager = { create: async (input) => {
     streamedInput = input
+    if (input.referenceImages?.length) {
+      assert.equal(await fs.stat(input.referenceImages[0]).then(() => true, () => false), true)
+      await input.onReferencesIngested?.()
+      uploadRemovedDuringRun = await Promise.all(input.referenceImages.map((file) => fs.stat(file).then(() => false, () => true)))
+        .then((values) => values.every(Boolean))
+    }
     await input.onProgress?.({ type: 'tool_started', toolName: 'write_file', occurredAt: new Date().toISOString() })
     return { ...run, id: 'run_22222222-2222-4222-8222-222222222222', state: 'completed' }
   } }
@@ -44,6 +60,8 @@ test('protects management APIs and isolates preview content on another origin', 
   })
   const started = await server.start({ open: false })
   t.after(() => server.close())
+  assert.equal(await fs.stat(oldUpload).then(() => true, () => false), false)
+  assert.equal(await fs.stat(activeUpload).then(() => true, () => false), true)
   const url = new URL(started.url)
   const secrets = new URLSearchParams(url.hash.slice(1))
   const headers = { Origin: started.origin, Authorization: `Bearer ${secrets.get('token')}`, 'X-Orbit-CSRF': secrets.get('csrf'), 'Content-Type': 'application/json' }
@@ -60,6 +78,7 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.match(pageHtml, /class="pane project-sidebar"/)
   assert.match(pageHtml, /class="pane console"/)
   assert.match(pageHtml, /class="pane preview-shell"/)
+  assert.match(pageHtml, /id="new-project"/)
   assert.doesNotMatch(pageHtml, />Usage</)
   assert.doesNotMatch(pageHtml, />Catch</)
   const appSource = await fetch(`${started.origin}/app.js`).then((response) => response.text())
@@ -84,6 +103,8 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.equal(bootstrap.runs[0].gameName, 'Preview')
   assert.equal(bootstrap.runs[0].folderName, 'workspace')
   assert.equal(bootstrap.runs[0].displayName, 'Preview')
+  assert.equal(bootstrap.threads.length, 1)
+  assert.deepEqual(bootstrap.threads[0].runIds, [run.id])
   const persistedCheckpoint = JSON.parse(await fs.readFile(path.join(store.directory(run.id), 'checkpoint.json'), 'utf8'))
   assert.equal(Object.hasOwn(persistedCheckpoint, 'failureCategory'), false)
   assert.equal(Object.hasOwn(persistedCheckpoint, 'recoveryDisposition'), false)
@@ -100,8 +121,21 @@ test('protects management APIs and isolates preview content on another origin', 
   const saved = await fetch(`${started.origin}/api/provider`, { method: 'POST', headers, body: JSON.stringify({ provider: 'kimi-global', apiKey: 'test-key' }) })
   assert.equal(saved.status, 200)
   assert.deepEqual(savedCredential, { account: 'provider:kimi-global', secret: 'test-key' })
+  const createdThreadResponse = await fetch(`${started.origin}/api/threads`, {
+    method: 'POST', headers, body: JSON.stringify({ workspace, title: 'Second session' }),
+  })
+  assert.equal(createdThreadResponse.status, 200)
+  const createdThread = (await createdThreadResponse.json()).thread
+  assert.equal(createdThread.title, 'Second session')
+  assert.equal(createdThread.workspace, await fs.realpath(workspace))
   const streamResponse = await fetch(`${started.origin}/api/runs/stream`, {
-    method: 'POST', headers, body: JSON.stringify({ workspace, prompt: 'Build a game', mode: 'byok', provider: 'openrouter', runtime: 'html' }),
+    method: 'POST', headers, body: JSON.stringify({
+      workspace, threadId: createdThread.id, prompt: 'Build a game', operation: 'edit', mode: 'byok', provider: 'openrouter', runtime: 'html',
+      files: [{
+        name: 'reference.png',
+        data: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24)]).toString('base64'),
+      }],
+    }),
   })
   assert.equal(streamResponse.status, 200)
   assert.match(streamResponse.headers.get('content-type'), /application\/x-ndjson/)
@@ -110,7 +144,10 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.equal(streamMessages[0].event.toolName, 'write_file')
   assert.equal(streamMessages[1].run.recoveryDisposition, 'terminal')
   assert.equal(streamedInput.source, 'cli_gui')
+  assert.equal(streamedInput.threadId, createdThread.id)
+  assert.equal(streamedInput.operation, 'edit')
   assert.equal(streamedInput.onProgress instanceof Function, true)
+  assert.equal(uploadRemovedDuringRun, true)
   const imageResponse = await fetch(`${started.origin}/api/assets/image`, {
     method: 'POST', headers, body: JSON.stringify({ workspace, prompt: 'An original arcade icon', output: 'assets/images/icon.png', aspectRatio: '1:1' }),
   })
@@ -136,4 +173,42 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.notEqual(new URL(envelope.url).origin, started.origin)
   assert.match(preview.headers.get('content-security-policy'), /connect-src 'none'/)
   assert.match(preview.headers.get('content-security-policy'), new RegExp(`frame-ancestors ${started.origin.replaceAll('.', '\\.')}`))
+})
+
+test('bootstrap title metadata refuses symlink and oversized project indexes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-web-safe-title-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const directories = { config: path.join(root, 'config'), data: path.join(root, 'data') }
+  const store = new RunStore({ directories })
+  const secret = path.join(root, 'secret.html')
+  await fs.writeFile(secret, '<title>PRIVATE OUTSIDE TITLE</title>')
+  const linkedWorkspace = path.join(root, 'linked-workspace')
+  await fs.mkdir(linkedWorkspace)
+  await fs.symlink(secret, path.join(linkedWorkspace, 'index.html'))
+  const linked = await store.create({ workspace: linkedWorkspace, prompt: 'linked', mode: 'orbit' })
+  linked.lastValidation = { ok: true, index: 'index.html' }
+  await store.transition(linked, 'completed')
+  const largeWorkspace = path.join(root, 'large-workspace')
+  await fs.mkdir(largeWorkspace)
+  await fs.writeFile(path.join(largeWorkspace, 'index.html'), `<title>PRIVATE LARGE TITLE</title>${'x'.repeat(70 * 1024)}`)
+  const large = await store.create({ workspace: largeWorkspace, prompt: 'large', mode: 'orbit' })
+  large.lastValidation = { ok: true, index: 'index.html' }
+  await store.transition(large, 'completed')
+  const server = new WebCliServer({
+    asset3d: {}, assetImage: {}, manager: {},
+    auth: { status: async () => ({ signedIn: false }) },
+    byok: {}, config: { get: async () => ({ mode: 'orbit' }) },
+    credentials: { get: async () => null }, store, apiFactory: () => ({}), publishFactory: () => ({}), directories,
+  })
+  const started = await server.start({ open: false })
+  t.after(() => server.close())
+  const hash = new URLSearchParams(new URL(started.url).hash.slice(1))
+  const headers = { Origin: started.origin, Authorization: `Bearer ${hash.get('token')}`, 'X-Orbit-CSRF': hash.get('csrf') }
+
+  const bootstrap = await fetch(`${started.origin}/api/bootstrap`, { headers }).then((response) => response.json())
+  const linkedView = bootstrap.runs.find((run) => run.id === linked.id)
+  const largeView = bootstrap.runs.find((run) => run.id === large.id)
+  assert.equal(linkedView.gameName, '')
+  assert.equal(largeView.gameName, '')
+  assert.doesNotMatch(JSON.stringify(bootstrap), /PRIVATE (?:OUTSIDE|LARGE) TITLE/)
 })

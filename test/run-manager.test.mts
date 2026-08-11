@@ -6,11 +6,14 @@ import test from 'node:test'
 import {
   assertAgentTranscriptProtocol,
   createAgentToolBatchJournal,
+  prepareAgentMessageCompaction,
   recordAgentToolBatchResult,
 } from '@soda_game/orbit-agent-core'
 import { OrbitApiError } from '../src/api.mjs'
+import { ingestReferenceImages } from '../src/attachments.mjs'
 import { RunManager } from '../src/run-manager.mjs'
 import { RunStore } from '../src/run-store.mjs'
+import { persistentVisionTurnInputMessage, turnInputItems } from '../src/turn-input.mjs'
 
 const tool = (id, name, args) => ({ id, type: 'function', function: { name, arguments: JSON.stringify(args) } })
 
@@ -28,6 +31,29 @@ async function checkpointedRun(store, workspace, messages) {
     mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html',
   })
   run.messages = messages
+  await store.transition(run, 'interrupted')
+  return run
+}
+
+async function linkedInterruptedRun(store, workspace, messages) {
+  await fs.mkdir(workspace, { recursive: true })
+  const thread = await store.createThread(workspace, 'Compaction session')
+  const turnId = 'turn_77777777-7777-4777-8777-777777777777'
+  const run = await store.create({
+    source: 'cli', operation: 'create', prompt: 'Continue the durable task', workspace,
+    mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html',
+    threadId: thread.id, turnId,
+  })
+  await store.linkRunToTurn({
+    workspace,
+    threadId: thread.id,
+    runId: run.id,
+    preferredTurnId: turnId,
+    baseMessageCount: 0,
+    inputItems: [{ schema: 'orbit.agent-input-item.v1', id: 'compaction-input', type: 'text', text: 'Continue the durable task' }],
+  })
+  run.messages = messages
+  run.turnInputProjected = true
   await store.transition(run, 'interrupted')
   return run
 }
@@ -75,6 +101,455 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
   assert.equal(assistantCheckpoint.reasoning_content, 'provider reasoning')
   assert.deepEqual(assistantCheckpoint.response_items, [{ type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque' }])
   assert.match(await fs.readFile(path.join(workspace, 'game.js'), 'utf8'), /endGame/)
+})
+
+test('managed text model receives one structured observation per private image, never an aggregate', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-media-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  const imageA = path.join(root, 'a.png')
+  const imageB = path.join(root, 'b.png')
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  await fs.writeFile(imageA, Buffer.concat([signature, Buffer.alloc(24, 1)]))
+  await fs.writeFile(imageB, Buffer.concat([signature, Buffer.alloc(24, 2)]))
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const referenceRequests = []
+  let agentMessages
+  const api = {
+    models: async () => ({ default: 'deepseek-v4-pro', models: [{ id: 'deepseek-v4-pro' }] }),
+    beginRun: async () => ({ run_id: 'cloud-media-1' }),
+    complete: async (input) => {
+      if (input.purpose === 'reference_media') {
+        referenceRequests.push(input)
+        return { assistant: { role: 'assistant', content: JSON.stringify({
+          summary: `observation ${referenceRequests.length}`,
+          facts: [{ id: `fact-${referenceRequests.length}`, label: 'composition', text: `visible fact ${referenceRequests.length}`, confidence: 0.9 }],
+        }) } }
+      }
+      agentMessages ||= structuredClone(input.messages)
+      return { assistant: { role: 'assistant', content: 'thinking' } }
+    },
+  }
+  const manager = new RunManager({
+    store,
+    config: { get: async () => ({ mode: 'orbit', provider: 'openrouter', model: '', runtime: 'html', cloudLogs: false }) },
+    credentials: { get: async () => null }, auth: { accessToken: async () => 'session' },
+    apiFactory: () => api, byok: {}, threeD: {}, image: {}, cloudLogs: null,
+  })
+
+  const run = await manager.create({ workspace, prompt: 'Build from both images', mode: 'orbit', referenceImages: [imageA, imageB] })
+
+  assert.equal(referenceRequests.length, 2)
+  assert.equal(referenceRequests.every((request) => request.messages[0].content.filter((part) => part.type === 'image_url').length === 1), true)
+  assert.deepEqual(run.mediaObservations.map((value) => value.summary), ['observation 1', 'observation 2'])
+  assert.equal(run.mediaObservations.every((value) => value.facts.length === 1), true)
+  const projectedUser = agentMessages.findLast((message) => message.role === 'user')
+  const structured = projectedUser.content.filter((part) => part.type === 'text' && String(part.text).startsWith('{')).map((part) => JSON.parse(part.text))
+  assert.equal(structured.length, 2)
+  assert.deepEqual(structured.map((value) => value.observation.summary), ['observation 1', 'observation 2'])
+  assert.equal(projectedUser.content.some((part) => part.type === 'image_url'), false)
+})
+
+test('vision BYOK hydrates private images only for provider requests and never checkpoints data URLs', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-byok-media-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  const image = path.join(root, 'reference.png')
+  await fs.writeFile(image, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(24, 3),
+  ]))
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const providerInputs = []
+  const manager = new RunManager({
+    store,
+    config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'vision-model', runtime: 'html', cloudLogs: false }) },
+    credentials: { get: async () => 'configured' }, auth: {}, apiFactory: () => ({}),
+    byok: {
+      capability: async () => ({ vision: true }),
+      complete: async (input) => { providerInputs.push(structuredClone(input.messages)); return { role: 'assistant', content: 'thinking' } },
+    },
+    threeD: {}, cloudLogs: null,
+  })
+
+  const run = await manager.create({ workspace, prompt: 'Use this image', mode: 'byok', provider: 'openrouter', referenceImages: [image] })
+  const firstUser = providerInputs[0].findLast((message) => message.role === 'user')
+  assert.match(firstUser.content.find((part) => part.type === 'image_url').image_url.url, /^data:image\/png;base64,/)
+  const checkpoint = await fs.readFile(path.join(store.directory(run.id), 'checkpoint.json'), 'utf8')
+  assert.doesNotMatch(checkpoint, /data:image\//)
+  assert.match(checkpoint, /orbit\.agent-input-item\.v1/)
+})
+
+test('same-provider Thread continuation rehydrates prior private images without persisting bytes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-byok-media-thread-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  const image = path.join(root, 'reference.png')
+  await fs.writeFile(image, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(24, 4),
+  ]))
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const providerInputs = []
+  let calls = 0
+  const manager = new RunManager({
+    store,
+    config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'vision-model', runtime: 'html', cloudLogs: false }) },
+    credentials: { get: async () => 'configured' }, auth: {}, apiFactory: () => ({}),
+    byok: {
+      capability: async () => ({ vision: true }),
+      complete: async (input) => {
+        providerInputs.push(structuredClone(input.messages))
+        calls += 1
+        if (calls === 1) return { role: 'assistant', content: '', tool_calls: [
+          tool('plan-image', 'update_agent_plan', { summary: 'Build', todos: [{ id: 'build', title: 'Build', status: 'in_progress', kind: 'code' }] }),
+          tool('html-image', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
+          tool('js-image', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); OrbitArcade.endGame({score:1})' }),
+          tool('validate-image', 'validate_project', {}),
+          tool('done-image', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build', status: 'completed', kind: 'code' }] }),
+          tool('finish-image', 'finish', {}),
+        ] }
+        return { role: 'assistant', content: 'thinking' }
+      },
+    },
+    threeD: {}, cloudLogs: null,
+  })
+
+  const first = await manager.create({ workspace, prompt: 'Use this image', mode: 'byok', provider: 'openrouter', model: 'vision-model', referenceImages: [image] })
+  assert.equal(first.state, 'completed')
+  const beforeSwitchRuns = await store.list()
+  const beforeSwitchTurns = (await store.listThreads(workspace))[0].turns.length
+  await assert.rejects(
+    manager.create({ workspace, threadId: first.threadId, prompt: 'Switch provider', mode: 'byok', provider: 'deepseek', model: 'vision-model' }),
+    (error) => error?.code === 'VISION_PROVIDER_BOUNDARY',
+  )
+  assert.equal((await store.list()).length, beforeSwitchRuns.length)
+  assert.equal((await store.listThreads(workspace))[0].turns.length, beforeSwitchTurns)
+  await assert.rejects(
+    manager.create({
+      workspace, threadId: first.threadId, prompt: 'Overflow history', mode: 'byok', provider: 'openrouter', model: 'vision-model',
+      referenceImages: Array.from({ length: 8 }, () => image),
+    }),
+    (error) => error?.code === 'VISION_HISTORY_LIMIT',
+  )
+  assert.equal((await store.list()).length, beforeSwitchRuns.length)
+  assert.equal((await store.listThreads(workspace))[0].turns.length, beforeSwitchTurns)
+  const second = await manager.create({ workspace, threadId: first.threadId, prompt: 'Keep the same visual language', mode: 'byok', provider: 'openrouter', model: 'vision-model' })
+  assert.equal(second.state, 'paused')
+  const secondRequest = providerInputs[1]
+  const priorImages = secondRequest.flatMap((message) => Array.isArray(message.content)
+    ? message.content.filter((part) => part.type === 'image_url')
+    : [])
+  assert.equal(priorImages.length, 1)
+  assert.match(priorImages[0].image_url.url, /^data:image\/png;base64,/)
+  assert.doesNotMatch(await fs.readFile(path.join(store.directory(second.id), 'checkpoint.json'), 'utf8'), /data:image\//)
+})
+
+test('text-only BYOK media and cross-project Thread mismatch fail before Run, Turn, or workspace attachment writes', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-media-preflight-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspaceA = path.join(root, 'workspace-a')
+  const workspaceB = path.join(root, 'workspace-b')
+  await fs.mkdir(workspaceA)
+  await fs.mkdir(workspaceB)
+  const image = path.join(root, 'reference.png')
+  await fs.writeFile(image, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 5)]))
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const thread = await store.createThread(workspaceA, 'Media preflight')
+  const manager = new RunManager({
+    store,
+    config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'text-model', runtime: 'html', cloudLogs: false }) },
+    credentials: { get: async () => 'configured' }, auth: {}, apiFactory: () => ({}),
+    byok: { capability: async () => ({ vision: false }), complete: async () => { throw new Error('Provider must not be called') } },
+    threeD: {}, cloudLogs: null,
+  })
+
+  await assert.rejects(
+    manager.create({ workspace: workspaceA, threadId: thread.id, prompt: 'Attach', mode: 'byok', provider: 'openrouter', model: 'text-model', referenceImages: [image] }),
+    (error) => error?.code === 'VISION_UNAVAILABLE',
+  )
+  await assert.rejects(
+    manager.create({ workspace: workspaceB, threadId: thread.id, prompt: 'Wrong project', mode: 'byok', provider: 'openrouter', model: 'vision-model', referenceImages: [image] }),
+    /Session does not belong/,
+  )
+  assert.equal((await store.list()).length, 0)
+  assert.equal((await store.listThreads(workspaceA))[0].turns.length, 0)
+  assert.equal(await fs.stat(path.join(workspaceA, '.orbit')).then(() => true, () => false), false)
+  assert.equal(await fs.stat(path.join(workspaceB, '.orbit')).then(() => true, () => false), false)
+})
+
+test('semantic compaction uses the model without consuming an agent iteration', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-semantic-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const messages = Array.from({ length: 142 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    content: index === 0 ? 'Build the durable objective' : `historical decision ${index}`,
+  }))
+  const run = await linkedInterruptedRun(store, workspace, messages)
+  let summaryCalls = 0
+  let agentCalls = 0
+  const manager = localManager(store, async (input) => {
+    if (String(input.system || '').includes('semantic summary')) {
+      summaryCalls += 1
+      assert.equal(input.tools.length, 0)
+      assert.equal(input.maxOutputTokens, 5_000)
+      return { role: 'assistant', content: JSON.stringify({ objective: 'Build the durable objective', latestUserIntent: 'Continue', decisions: [{ summary: 'Keep the previous architecture', sourceRefs: [] }] }) }
+    }
+    agentCalls += 1
+    return { role: 'assistant', content: 'thinking' }
+  })
+
+  const resumed = await manager.resume(run.id)
+  assert.equal(resumed.state, 'paused')
+  assert.equal(summaryCalls, 1)
+  assert.equal(agentCalls, 3)
+  assert.equal(resumed.iteration, 3)
+  assert.equal(resumed.messages.some((message) => String(message.content).includes('Keep the previous architecture')), true)
+  const events = await store.events(run.id)
+  assert.equal(events.filter((event) => event.type === 'context_compaction_started').length, 1)
+  assert.equal(events.find((event) => event.type === 'context_compacted')?.mode, 'semantic')
+})
+
+test('semantic compaction keeps a middle visual Turn available for same-provider hydration', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-visual-compaction-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const image = path.join(root, 'reference.png')
+  await fs.writeFile(image, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(24, 6),
+  ]))
+  const references = await ingestReferenceImages(workspace, [image])
+  const visualItems = turnInputItems('Use the visual composition.', references, 'turn-visual')
+  const visualTurn = persistentVisionTurnInputMessage(visualItems, 'turn-visual', 'openrouter')
+  const currentTurnId = 'turn_77777777-7777-4777-8777-777777777777'
+  const currentTurn = {
+    role: 'user', content: 'Continue the current implementation.',
+    inputItems: [{ schema: 'orbit.agent-input-item.v1', id: 'current-input', type: 'text', text: 'Continue the current implementation.' }],
+    orbit_internal: { schema: 'orbit.cli-turn-marker.v1', type: 'turn_input', turnId: currentTurnId },
+  }
+  const messages = [
+    { role: 'user', content: 'Build the visual game.' },
+    ...Array.from({ length: 40 }, (_, index) => ({ role: 'assistant', content: `early-${index} ${'x'.repeat(1_000)}` })),
+    visualTurn,
+    ...Array.from({ length: 80 }, (_, index) => ({ role: index % 2 ? 'user' : 'assistant', content: `history-${index} ${'y'.repeat(1_000)}` })),
+    currentTurn,
+    ...Array.from({ length: 20 }, (_, index) => ({ role: 'assistant', content: `tail-${index} ${'z'.repeat(1_000)}` })),
+  ]
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const run = await linkedInterruptedRun(store, workspace, messages)
+  run.visionCapability = { provider: 'openrouter', model: 'test-model', vision: true, confirmedAt: new Date().toISOString() }
+  await store.save(run)
+  const agentRequests = []
+  const manager = localManager(store, async (input) => {
+    if (String(input.system || '').includes('semantic summary')) {
+      return { role: 'assistant', content: JSON.stringify({ objective: 'Build the visual game.', latestUserIntent: 'Continue.', decisions: [] }) }
+    }
+    agentRequests.push(structuredClone(input.messages))
+    return { role: 'assistant', content: 'thinking' }
+  })
+
+  const resumed = await manager.resume(run.id)
+  assert.equal(resumed.state, 'paused')
+  assert.equal(agentRequests.length, 3)
+  assert.equal(agentRequests.every((request) => request.some((message) => Array.isArray(message.content)
+    && message.content.some((part) => part.type === 'image_url' && /^data:image\/png;base64,/.test(part.image_url.url)))), true)
+  const checkpoint = await fs.readFile(path.join(store.directory(run.id), 'checkpoint.json'), 'utf8')
+  assert.match(checkpoint, /turn-visual/)
+  assert.doesNotMatch(checkpoint, /data:image\//)
+})
+
+test('pending BYOK semantic compaction requires explicit unsafe retry while ready summaries commit locally', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-semantic-recovery-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const baseMessages = Array.from({ length: 142 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `history ${index}` }))
+
+  for (const status of ['pending', 'ready']) {
+    const workspace = path.join(root, status)
+    const store = new RunStore({ directories: { config: path.join(root, `${status}-config`), data: path.join(root, `${status}-data`) } })
+    const run = await linkedInterruptedRun(store, workspace, structuredClone(baseMessages))
+    const preparation = prepareAgentMessageCompaction(run.messages, { profile: 'cli-local' })
+    run.pendingSemanticCompaction = {
+      schema: 'orbit.cli-semantic-compaction.v1',
+      sourceFingerprint: preparation.sourceFingerprint,
+      generation: preparation.generation,
+      requestKey: `persisted-${status}`,
+      status,
+      ...(status === 'ready' ? { rawSemanticSummary: JSON.stringify({ objective: 'Recovered summary', latestUserIntent: 'Continue safely' }) } : {}),
+    }
+    await store.save(run)
+    let summaryCalls = 0
+    const manager = localManager(store, async (input) => {
+      if (String(input.system || '').includes('semantic summary')) {
+        summaryCalls += 1
+        return { role: 'assistant', content: JSON.stringify({ objective: 'Retried summary', latestUserIntent: 'Continue safely' }) }
+      }
+      return { role: 'assistant', content: 'thinking' }
+    })
+    const first = await manager.resume(run.id)
+    if (status === 'pending') {
+      assert.equal(first.lastError.code, 'UNSAFE_RETRY_CONFIRMATION_REQUIRED')
+      assert.equal(summaryCalls, 0)
+      const retried = await manager.resume(run.id, { retryUnsafe: true })
+      assert.equal(retried.state, 'paused')
+      assert.equal(summaryCalls, 1)
+    } else {
+      assert.equal(first.state, 'paused')
+      assert.equal(summaryCalls, 0)
+      assert.equal(first.messages.some((message) => String(message.content).includes('Recovered summary')), true)
+    }
+  }
+})
+
+test('ambiguous BYOK semantic transport failure keeps its pending request and never auto-replays billing', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-semantic-transport-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const messages = Array.from({ length: 142 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `history ${index}` }))
+  const run = await linkedInterruptedRun(store, workspace, messages)
+  let summaryCalls = 0
+  const manager = localManager(store, async (input) => {
+    if (String(input.system || '').includes('semantic summary')) {
+      summaryCalls += 1
+      if (summaryCalls === 1) throw Object.assign(new Error('connection reset after request'), { code: 'ECONNRESET' })
+      return { role: 'assistant', content: JSON.stringify({ objective: 'Recovered after confirmation', latestUserIntent: 'Continue' }) }
+    }
+    return { role: 'assistant', content: 'thinking' }
+  })
+
+  const first = await manager.resume(run.id)
+  assert.equal(first.state, 'paused')
+  assert.equal(first.unsafeResumeRequired, true)
+  assert.equal(first.pendingSemanticCompaction.status, 'pending')
+  assert.equal(summaryCalls, 1)
+
+  const held = await manager.resume(run.id)
+  assert.equal(held.lastError.code, 'UNSAFE_RETRY_CONFIRMATION_REQUIRED')
+  assert.equal(summaryCalls, 1)
+
+  const retried = await manager.resume(run.id, { retryUnsafe: true })
+  assert.equal(retried.state, 'paused')
+  assert.equal(summaryCalls, 2)
+  assert.equal(retried.pendingSemanticCompaction, null)
+})
+
+test('failed and cancelled terminal Turns continue their protocol-safe transcript instead of resetting the Thread', async (t) => {
+  for (const state of ['failed', 'cancelled']) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `orbit-manager-terminal-${state}-`))
+    t.after(() => fs.rm(root, { recursive: true, force: true }))
+    const workspace = path.join(root, 'workspace')
+    await fs.mkdir(workspace)
+    const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+    const thread = await store.createThread(workspace, `${state} continuation`)
+    const turnId = 'turn_88888888-8888-4888-8888-888888888888'
+    const terminal = await store.create({ workspace, prompt: 'Turn B', mode: 'byok', provider: 'openrouter', model: 'test-model', threadId: thread.id, turnId })
+    terminal.messages = [
+      { role: 'user', content: 'Turn A intent' },
+      { role: 'assistant', content: 'Turn A result' },
+      { role: 'user', content: 'Turn B correction' },
+      { role: 'assistant', content: `Turn B ${state}` },
+    ]
+    await store.linkRunToTurn({
+      workspace, threadId: thread.id, runId: terminal.id, preferredTurnId: turnId, baseMessageCount: 0,
+      inputItems: [{ schema: 'orbit.agent-input-item.v1', id: 'terminal-input', type: 'text', text: 'Turn B correction' }],
+    })
+    await store.transition(terminal, state)
+    let firstRequest
+    const manager = localManager(store, async ({ messages }) => {
+      firstRequest ||= structuredClone(messages)
+      return { role: 'assistant', content: 'thinking' }
+    })
+    const next = await manager.create({ workspace, threadId: thread.id, prompt: 'Turn C follow-up', mode: 'byok', provider: 'openrouter', model: 'test-model' })
+    assert.equal(next.state, 'paused')
+    const text = JSON.stringify(firstRequest)
+    assert.match(text, /Turn A intent/)
+    assert.match(text, /Turn B correction/)
+    assert.match(text, /Turn C follow-up/)
+  }
+})
+
+test('relocated legacy tool results never send old or current absolute workspace roots to the provider', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-relocated-path-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  await fs.writeFile(path.join(workspace, 'index.html'), '<!doctype html>')
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const thread = await store.createThread(workspace, 'Relocated session')
+  const turnId = 'turn_99999999-9999-4999-8999-999999999999'
+  const first = await store.create({ workspace, prompt: 'Inspect', mode: 'byok', provider: 'openrouter', model: 'test-model', threadId: thread.id, turnId })
+  first.messages = [
+    { role: 'user', content: 'Inspect index' },
+    { role: 'assistant', content: '', tool_calls: [
+      tool('legacy-read', 'read_file', { path: 'index.html' }),
+      tool('legacy-list', 'list_files', {}),
+      tool('legacy-shell', 'shell', { command: 'pwd' }),
+      tool('legacy-asset', 'generate_image', { prompt: 'icon', output_path: 'assets/icon.png' }),
+      tool('legacy-error', 'read_file', { path: 'missing.html' }),
+    ] },
+    { role: 'tool', tool_call_id: 'legacy-read', content: JSON.stringify({ path: path.join(workspace, 'index.html'), content: 'const example = "/opt/example/path"' }) },
+    { role: 'tool', tool_call_id: 'legacy-list', content: `${path.join(workspace, 'index.html')}\nindex.html` },
+    { role: 'tool', tool_call_id: 'legacy-shell', content: JSON.stringify({ output: `${workspace}\nbuild ok`, code: 0 }) },
+    { role: 'tool', tool_call_id: 'legacy-asset', content: JSON.stringify({ path: path.join(workspace, 'assets', 'icon.png'), relativePath: 'assets/icon.png', hash: 'abc123' }) },
+    { role: 'tool', tool_call_id: 'legacy-error', content: JSON.stringify({ ok: false, error: `ENOENT ${path.join(workspace, 'missing.html')}` }) },
+    { role: 'assistant', content: 'Inspected.' },
+  ]
+  await store.linkRunToTurn({
+    workspace, threadId: thread.id, runId: first.id, preferredTurnId: turnId, baseMessageCount: 0,
+    inputItems: [{ schema: 'orbit.agent-input-item.v1', id: 'relocated-input', type: 'text', text: 'Inspect index' }],
+  })
+  await store.transition(first, 'completed')
+  const moved = path.join(root, 'moved')
+  await fs.rename(workspace, moved)
+  const canonicalMoved = await fs.realpath(moved)
+  await store.relocateWorkspace(first.id, canonicalMoved)
+  let firstRequest
+  const manager = localManager(store, async ({ messages }) => {
+    firstRequest ||= structuredClone(messages)
+    return { role: 'assistant', content: 'thinking' }
+  })
+
+  await manager.create({ workspace: canonicalMoved, threadId: thread.id, prompt: 'Continue', mode: 'byok', provider: 'openrouter', model: 'test-model' })
+
+  const wire = JSON.stringify(firstRequest)
+  assert.doesNotMatch(wire, new RegExp(workspace.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(wire, new RegExp(canonicalMoved.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(wire, /\/opt\/example\/path/)
+  assert.match(wire, /assets\/icon\.png/)
+})
+
+test('thread creation lease rejects a concurrent active sibling turn', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-manager-thread-lease-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const thread = await store.createThread(workspace, 'One active turn')
+  let releaseFirst
+  let firstProviderStarted
+  const started = new Promise((resolve) => { firstProviderStarted = resolve })
+  const gate = new Promise((resolve) => { releaseFirst = resolve })
+  let calls = 0
+  const manager = localManager(store, async () => {
+    calls += 1
+    if (calls === 1) { firstProviderStarted(); await gate }
+    return { role: 'assistant', content: 'thinking' }
+  })
+  const first = manager.create({ workspace, threadId: thread.id, prompt: 'First', mode: 'byok', provider: 'openrouter' })
+  await started
+  await assert.rejects(
+    manager.create({ workspace, threadId: thread.id, prompt: 'Second', mode: 'byok', provider: 'openrouter' }),
+    /has a resumable run|workspace is already active/,
+  )
+  releaseFirst()
+  await first
+  const snapshot = (await store.listThreads(workspace)).find((value) => value.id === thread.id)
+  assert.equal(snapshot.turns.length, 1)
+  assert.equal(snapshot.runIds.length, 1)
 })
 
 test('one model batch of repeated tool errors counts once and remains protocol-valid', async (t) => {
