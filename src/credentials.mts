@@ -1,7 +1,7 @@
 import { Entry } from '@napi-rs/keyring'
 import { createHash, randomBytes } from 'node:crypto'
 import { PROVIDER_IDS } from './constants.mjs'
-import type { OrbitProviderId } from '../packages/orbit-provider-core/index.mjs'
+import type { OrbitProviderId } from '@soda_game/orbit-provider-core'
 
 const SERVICE = 'com.orbit-arcade.cli'
 const CHUNK_SCHEMA = 'orbit-cli-keyring-chunks.v1'

@@ -1,4 +1,4 @@
-import type { OrbitCodingProviderId } from '../packages/orbit-provider-core/index.mjs'
+import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
 
 export type OrbitClientSource = 'cli' | 'cli_gui'
 export type OrbitMode = 'orbit' | 'byok'

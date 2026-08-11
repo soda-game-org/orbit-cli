@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { providerCredentialAccount } from './credentials.mjs'
 import { collectStream, id, isContained, sha256, sleep } from './util.mjs'
-import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '../packages/orbit-provider-core/index.mjs'
+import { generateReplicateModel3d, validateReplicateDeliveryUrl } from '@soda_game/orbit-provider-core'
 import type { CredentialStore } from './credentials.mjs'
 import type { OrbitApi } from './api.mjs'
 

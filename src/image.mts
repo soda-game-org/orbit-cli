@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { providerCredentialAccount } from './credentials.mjs'
 import { boundedString, canonicalDirectory, collectStream, id, isContained, sha256 } from './util.mjs'
-import { generateReplicateImage } from '../packages/orbit-provider-core/index.mjs'
+import { generateReplicateImage } from '@soda_game/orbit-provider-core'
 import type { CredentialStore } from './credentials.mjs'
 
 type Dynamic = Record<string, any>

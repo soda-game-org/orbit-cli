@@ -97,7 +97,7 @@ export const PROVIDERS: Readonly<Record<OrbitProviderId, OrbitProviderDefinition
     vision: false, protocol: 'chat-completions', purpose: 'coding',
   },
   deepseek: {
-    label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash',
+    label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-pro',
     vision: false, protocol: 'chat-completions', purpose: 'coding',
   },
   ark: {

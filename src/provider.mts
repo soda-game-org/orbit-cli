@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises'
-import { MODEL_OUTPUT_TOKENS, PROVIDERS } from './constants.mjs'
+import { PROVIDERS } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
 import { referenceDataUrl, type ReferenceImageMetadata } from './attachments.mjs'
 import {
   codingProvider,
   completeWithProvider,
   discoverProviderModels,
-} from '../packages/orbit-provider-core/index.mjs'
+} from '@soda_game/orbit-provider-core'
 import { publicError } from './util.mjs'
-import type { OrbitCodingProviderId, OrbitProviderAssistant, OrbitProviderCompletionInput, OrbitProviderModel } from '../packages/orbit-provider-core/index.mjs'
+import type { OrbitCodingProviderId, OrbitProviderAssistant, OrbitProviderCompletionInput, OrbitProviderModel } from '@soda_game/orbit-provider-core'
 
 const CLI_OPENROUTER_HEADERS = Object.freeze({
   'HTTP-Referer': 'https://github.com/soda-game-org/orbit-cli',
@@ -63,7 +63,7 @@ export class ByokProvider {
     return String(response.content || '').toLowerCase().includes('orbit-ok')
   }
 
-  async complete({ provider, model, messages, tools = [], system = '', maxOutputTokens = MODEL_OUTPUT_TOKENS, signal, onRetry }: Omit<OrbitProviderCompletionInput, 'apiKey' | 'fetchImpl' | 'clientHeaders'>): Promise<OrbitProviderAssistant> {
+  async complete({ provider, model, messages, tools = [], system = '', maxOutputTokens, signal, onRetry }: Omit<OrbitProviderCompletionInput, 'apiKey' | 'fetchImpl' | 'clientHeaders'>): Promise<OrbitProviderAssistant> {
     const definition = codingProvider(provider)
     const token = await this.credentials.get(providerCredentialAccount(provider))
     if (!token) throw new Error(`No ${definition.label} API key is configured`)
