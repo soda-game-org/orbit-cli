@@ -4,6 +4,7 @@ import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
 import { ByokProvider } from '../src/provider.mjs'
 import {
+  buildProviderRequest,
   generateReplicateImage,
   generateReplicateModel3d,
   normalizeProviderUsage,
@@ -164,8 +165,51 @@ test('chat-completions profiles send each key only to its fixed regional host', 
   for (const [index, [provider, url]] of [...expected].entries()) {
     assert.equal(calls[index].url, url)
     assert.equal(calls[index].init.headers.Authorization, `Bearer key-${provider}`)
-    assert.equal(JSON.parse(calls[index].init.body).model, PROVIDERS[provider].defaultModel)
+    const body = JSON.parse(calls[index].init.body)
+    assert.equal(body.model, PROVIDERS[provider].defaultModel)
+    assert.equal(Object.hasOwn(body, 'max_tokens'), false)
   }
+
+  const explicitlyBounded = buildProviderRequest({
+    provider: 'deepseek',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxOutputTokens: 2048,
+  })
+  assert.equal(explicitlyBounded.body.max_tokens, 2048)
+})
+
+test('Chat and Responses provider boundaries strip host-only message metadata without losing native fields', () => {
+  const internal = { schema: 'orbit.agent-internal-message.v1', type: 'context_summary', generation: 1 }
+  const messages = [
+    { role: 'user', content: 'Inspect', orbit_internal: internal },
+    {
+      role: 'assistant',
+      content: 'Working.',
+      reasoning: 'visible reasoning',
+      reasoning_details: [{ type: 'reasoning.encrypted', data: 'opaque' }],
+      response_items: [{ type: 'reasoning', id: 'reasoning_1', encrypted_content: 'opaque' }],
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+      orbit_internal: internal,
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: 'ok', orbit_internal: internal },
+  ]
+  const chat = buildProviderRequest({ provider: 'deepseek', messages })
+  assert.equal(JSON.stringify(chat.body).includes('orbit_internal'), false)
+  assert.equal(chat.body.messages[1].reasoning, 'visible reasoning')
+  assert.deepEqual(chat.body.messages[1].reasoning_details, messages[1].reasoning_details)
+  assert.deepEqual(chat.body.messages[1].response_items, messages[1].response_items)
+  assert.deepEqual(chat.body.messages[1].tool_calls, messages[1].tool_calls)
+
+  const responses = buildProviderRequest({ provider: 'openai', messages })
+  assert.equal(JSON.stringify(responses.body).includes('orbit_internal'), false)
+  assert.deepEqual(responses.body.input[1], messages[1].response_items[0])
+  assert.deepEqual(responses.body.input[2], { role: 'assistant', content: 'Working.' })
+  assert.deepEqual(responses.body.input[3], {
+    type: 'function_call',
+    call_id: 'call_1',
+    name: 'read_file',
+    arguments: '{}',
+  })
 })
 
 test('OpenAI direct uses Responses API and translates the agent tool transcript', async () => {
@@ -220,8 +264,64 @@ test('OpenAI direct uses Responses API and translates the agent tool transcript'
     ],
     tools,
   })
+  assert.equal(Object.hasOwn(requests[1].body, 'max_output_tokens'), false)
   assert.deepEqual(requests[1].body.input.slice(1, 4), firstOutput)
   assert.deepEqual(requests[1].body.input[4], { type: 'function_call_output', call_id: 'call_2', output: '<!doctype html>' })
+})
+
+test('provider requests fail closed before network access on a broken tool transcript', async () => {
+  const broken = [
+    { role: 'user', content: 'Inspect' },
+    { role: 'assistant', content: '', tool_calls: [
+      { id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+      { id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+    ] },
+    { role: 'tool', tool_call_id: 'call_1', content: 'ok' },
+    { role: 'user', content: 'warning inserted in the middle of the batch' },
+    { role: 'tool', tool_call_id: 'call_2', content: 'ok' },
+  ]
+  for (const provider of ['deepseek', 'openai']) {
+    assert.throws(() => buildProviderRequest({ provider, messages: broken }), /protocol violation/i)
+  }
+  assert.throws(() => buildProviderRequest({
+    provider: 'deepseek',
+    messages: [{ role: 'assistant', content: '', tool_calls: [{ id: 'bad', type: 'function' }] }],
+  }), /function payload/i)
+})
+
+test('Responses replay aligns raw output items to canonical assistant tool calls', () => {
+  const request = buildProviderRequest({
+    provider: 'openai',
+    messages: [
+      { role: 'user', content: 'Inspect' },
+      {
+        role: 'assistant',
+        content: 'Working.',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"index.html"}' } },
+          { id: 'call_2', type: 'function', function: { name: 'list_files', arguments: '{}' } },
+        ],
+        response_items: [
+          { type: 'reasoning', id: 'reasoning_1', encrypted_content: 'opaque' },
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Working.' }] },
+          ...Array.from({ length: 20 }, (_, index) => ({
+            type: 'function_call', call_id: `orphan_${index}`, name: 'shell', arguments: '{"command":"ignored"}',
+          })),
+          { type: 'function_call', call_id: 'call_1', name: 'stale_name', arguments: '{"stale":true}' },
+          { type: 'function_call', call_id: 'call_1', name: 'duplicate', arguments: '{}' },
+          { type: 'function_call_output', call_id: 'injected', output: 'ignored' },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: '<!doctype html>' },
+      { role: 'tool', tool_call_id: 'call_2', content: '{"files":[]}' },
+    ],
+  })
+  const calls = request.body.input.filter((item) => item.type === 'function_call')
+  assert.deepEqual(calls, [
+    { type: 'function_call', call_id: 'call_1', name: 'read_file', arguments: '{"path":"index.html"}' },
+    { type: 'function_call', call_id: 'call_2', name: 'list_files', arguments: '{}' },
+  ])
+  assert.equal(request.body.input.some((item) => item.type === 'function_call_output' && item.call_id === 'injected'), false)
 })
 
 test('OpenRouter model discovery returns bounded tool-capable catalog entries', async () => {

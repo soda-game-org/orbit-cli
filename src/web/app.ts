@@ -8,7 +8,7 @@ if (hash.get('token') && hash.get('csrf')) {
 history.replaceState(null, '', `${location.pathname}${location.search}`)
 
 const $ = (id: string): any => document.getElementById(id)
-let state: any = { runs: [], auth: { signedIn: false }, account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }, config: {}, providers: [], defaultWorkspace: '' }
+let state: any = { runs: [], auth: { signedIn: false }, account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }, config: {}, providers: [], managedModel: {}, defaultWorkspace: '' }
 let selectedWorkspace = ''
 let selectedRunId = ''
 let activePreviewRunId = ''
@@ -59,14 +59,32 @@ function configured(providerId: string): boolean {
   return Boolean(state.providers?.find((provider: any) => provider.id === providerId)?.configured)
 }
 
+function managedModelLabel(): string {
+  return String(state.managedModel?.label || state.managedModel?.id || 'Orbit Cloud model').trim()
+}
+
+function visibleModelLabel(mode: unknown, selectedModel: unknown): string {
+  const selected = String(selectedModel || '').trim()
+  if (selected) return mode === 'orbit' && selected === state.managedModel?.id ? managedModelLabel() : selected
+  return mode === 'orbit' ? managedModelLabel() : 'automatic model'
+}
+
+function runModelLabel(run: any): string {
+  return visibleModelLabel(run.mode || 'orbit', run.model)
+}
+
 function providerView(): void {
   const providerId = $('provider').value
   const definition = state.providers?.find((provider: any) => provider.id === providerId)
-  const discoverable = $('mode').value === 'byok' && definition?.modelDiscovery
+  const mode = $('mode').value
+  const discoverable = mode === 'byok' && definition?.modelDiscovery
   $('browse-models').disabled = !discoverable
-  $('browse-models').title = discoverable ? 'Load tool-capable models from this provider' : 'Enter a model ID or use automatic selection'
+  $('browse-models').title = discoverable
+    ? 'Load tool-capable models from this provider'
+    : mode === 'orbit' ? `Orbit Cloud default: ${managedModelLabel()}` : 'Enter a model ID or use automatic selection'
+  $('model').placeholder = mode === 'orbit' ? managedModelLabel() : 'Automatic'
   if (!discoverable) $('model-options').replaceChildren()
-  document.body.classList.toggle('byok-mode', $('mode').value === 'byok')
+  document.body.classList.toggle('byok-mode', mode === 'byok')
   launchView()
 }
 
@@ -187,7 +205,7 @@ function renderTurn(run: any): HTMLElement {
   const title = document.createElement('strong')
   title.textContent = run.state === 'completed' ? 'Game ready' : run.state === 'failed' ? 'Run failed' : run.state === 'paused' || run.state === 'interrupted' ? 'Run paused' : 'Local run'
   const subtitle = document.createElement('span')
-  subtitle.textContent = `${run.mode || 'orbit'} · ${run.model || 'automatic model'} · ${run.runtime || 'html'}`
+  subtitle.textContent = `${run.mode || 'orbit'} · ${runModelLabel(run)} · ${run.runtime || 'html'}`
   heading.append(title, subtitle)
   const badge = document.createElement('b')
   badge.className = `state ${run.state}`
@@ -257,7 +275,7 @@ function renderSelection(): void {
   const selected = selectedRuns.find((run: any) => run.id === selectedRunId) || latestRun(selectedRuns)
   $('thread-title').textContent = selected ? selected.displayName || selected.folderName || 'Local game' : 'New game'
   $('thread-meta').textContent = selected
-    ? `${selected.mode || 'orbit'} · ${selected.model || 'automatic model'} · ${selected.runtime || 'html'}`
+    ? `${selected.mode || 'orbit'} · ${runModelLabel(selected)} · ${selected.runtime || 'html'}`
     : accessLabel()
   $('prompt').placeholder = selected ? 'Describe a change to make…' : 'Describe a game to generate…'
   $('workspace').readOnly = Boolean(selectedWorkspace)
@@ -282,7 +300,9 @@ function accessLabel(): string {
     const provider = state.providers?.find((item: any) => item.id === $('provider').value)
     return provider?.configured ? `BYOK · ${provider.label}` : `BYOK · ${provider?.label || 'provider'} key required`
   }
-  return state.auth.signedIn ? 'Orbit Cloud · automatic model' : 'Orbit Cloud · sign in required'
+  return state.auth.signedIn
+    ? `Orbit Cloud · ${visibleModelLabel('orbit', $('model')?.value)}`
+    : 'Orbit Cloud · sign in required'
 }
 
 function launchView(): void {

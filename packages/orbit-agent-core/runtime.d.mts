@@ -34,6 +34,62 @@ export interface OrbitAgentExecutionState {
   repeatedValidationFailures: number
 }
 
+export interface OrbitAgentToolCall {
+  id?: string
+  type?: string
+  function?: { name?: string; arguments?: string }
+}
+
+export type OrbitAgentToolPrePlanPolicy = 'establish' | 'observe' | 'deny'
+export type OrbitAgentToolObservationScope = 'input' | 'source'
+export type OrbitAgentToolEffect = 'read' | 'write' | 'execute' | 'control'
+export type OrbitAgentToolParallelPolicy = 'safe' | 'serial'
+export type OrbitAgentToolRetryPolicy = 'safe' | 'idempotent' | 'unsafe'
+
+export interface OrbitAgentToolCapability {
+  schema: 'orbit.agent-tool-capability.v1'
+  prePlan: OrbitAgentToolPrePlanPolicy
+  observationScope: OrbitAgentToolObservationScope | null
+  effect: OrbitAgentToolEffect
+  parallel: OrbitAgentToolParallelPolicy
+  retry: OrbitAgentToolRetryPolicy
+  budget: Readonly<{ maxPrePlanCalls: number }>
+}
+
+export type OrbitAgentToolCapabilityRegistry = Readonly<Record<string, Readonly<OrbitAgentToolCapability>>>
+
+export interface OrbitAgentToolPrePlanEvaluation {
+  allowed: boolean
+  decision: 'planned' | 'establish' | 'observe' | 'denied' | 'source_not_authorized' | 'budget_exhausted'
+  consumesObservation: boolean
+  capability: Readonly<OrbitAgentToolCapability>
+  scope?: OrbitAgentToolObservationScope
+  observed?: number
+  limit?: number
+}
+
+export interface OrbitAgentToolBatch {
+  allCalls: OrbitAgentToolCall[]
+  executableCalls: OrbitAgentToolCall[]
+  skippedCalls: OrbitAgentToolCall[]
+  limit: number
+}
+
+export interface OrbitAgentToolResult extends Record<string, unknown> {
+  role: 'tool'
+  tool_call_id: string
+  content: string
+}
+
+export interface OrbitAgentToolBatchJournal {
+  schema: 'orbit.agent-tool-batch.v1'
+  status: 'open' | 'closed'
+  calls: OrbitAgentToolCall[]
+  limit: number
+  results: OrbitAgentToolResult[]
+  deferredMessages: OrbitAgentMessage[]
+}
+
 export interface OrbitAgentRenderSurfacePolicy {
   minViewportAreaCoverage: number
   minBackingScale: number
@@ -61,6 +117,7 @@ export type OrbitAgentExecutionEvent =
   | { type: 'model_failure' }
   | { type: 'tool_batch'; count: number }
   | { type: 'tool_result'; ok: boolean; key?: string }
+  | { type: 'tool_batch_result'; ok: boolean; key?: string }
   | { type: 'validation_result'; ok: boolean; signature?: string }
 
 export type OrbitAgentExecutionStopReason =
@@ -111,7 +168,7 @@ export interface OrbitProContextPolicy {
   compactMessageCount: number
 }
 
-export type OrbitAgentExecutorProfile = 'local-desktop' | 'cli-local' | 'container-local' | 'e2b-cloud' | 'test'
+export type OrbitAgentExecutorProfile = 'local-desktop' | 'cli-local' | 'container-local' | 'e2b-cloud' | 'worker-standard' | 'test'
 
 export interface OrbitAgentCapabilityProfile {
   schema: 'orbit.agent-capability-profile.v1'
@@ -216,6 +273,7 @@ export interface OrbitAgentCheckpoint {
     idempotencyKey?: string
     targetPaths: string[]
   }
+  pendingToolBatch: OrbitAgentToolBatchJournal | null
 }
 
 export interface OrbitProAgentConversationPolicy {
@@ -295,16 +353,46 @@ export interface OrbitAgentConversationTransition {
 
 export const ORBIT_PRO_AGENT_CORE_VERSION: string
 export const ORBIT_AGENT_EXECUTION_POLICY: Readonly<OrbitAgentExecutionPolicy>
+export const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA: 'orbit.agent-tool-capability.v1'
+export const ORBIT_AGENT_TOOL_CAPABILITY: unique symbol
 export const ORBIT_AGENT_RENDER_SURFACE_CONTRACT: string
 export const ORBIT_AGENT_RENDER_SURFACE_POLICY: Readonly<OrbitAgentRenderSurfacePolicy>
 export const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA: 'orbit.agent-capability-profile.v1'
 export const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA: 'orbit.agent-semantic-summary.v1'
 export const ORBIT_AGENT_CHECKPOINT_SCHEMA: 'orbit.agent-checkpoint.v1'
+export const ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA: 'orbit.agent-internal-message.v1'
+export const ORBIT_AGENT_TOOL_BATCH_SCHEMA: 'orbit.agent-tool-batch.v1'
 export const ORBIT_AGENT_CAPABILITY_PROFILES: Readonly<Record<OrbitAgentExecutorProfile, Readonly<OrbitAgentCapabilityProfile>>>
 export const ORBIT_VISUAL_PLAN_MAX_CANDIDATES: 3
 export const ORBIT_LOOP_ITERATION_POLICY: Readonly<OrbitLoopIterationPolicy>
 export const ORBIT_PRO_AGENT_CONTEXT_POLICY: Readonly<OrbitProContextPolicy>
 export const ORBIT_PRO_AGENT_CONVERSATION_POLICY: Readonly<OrbitProAgentConversationPolicy>
+
+export function normalizeAgentToolCapability(raw?: unknown): Readonly<OrbitAgentToolCapability>
+export function defineAgentToolCapability<T extends Record<string, unknown>>(
+  toolSpec: T,
+  capability: Partial<OrbitAgentToolCapability> & {
+    budget?: Partial<OrbitAgentToolCapability['budget']>
+  },
+): T
+export function createAgentToolCapabilityRegistry(
+  entries?: Record<string, unknown> | Array<Record<string, unknown> | readonly [string, unknown]>,
+): OrbitAgentToolCapabilityRegistry
+export function getAgentToolCapability(
+  tool: string | Record<string, unknown>,
+  registry?: OrbitAgentToolCapabilityRegistry,
+): Readonly<OrbitAgentToolCapability>
+export function evaluateAgentToolPrePlan(
+  tool: string | Record<string, unknown>,
+  options?: {
+    registry?: OrbitAgentToolCapabilityRegistry
+    hasPlan?: boolean
+    allowSourceObservation?: boolean
+    observationCounts?: Partial<Record<OrbitAgentToolObservationScope, number>>
+  },
+): Readonly<OrbitAgentToolPrePlanEvaluation>
+export function selectAgentToolBatchErrorKey(errorKeys: unknown[], previousKey?: unknown): string
+export function projectAgentMessagesForProvider(messages: OrbitAgentMessage[]): OrbitAgentMessage[]
 
 export function createAgentExecutionState(raw?: Partial<OrbitAgentExecutionState>): OrbitAgentExecutionState
 export function transitionAgentExecutionState(
@@ -316,6 +404,54 @@ export function transitionAgentExecutionState(
   warning: 'repeated_tool_error' | null
   stopReason: OrbitAgentExecutionStopReason | null
 }
+
+export function splitAgentToolCallBatch(
+  assistant: { tool_calls?: OrbitAgentToolCall[] } | null | undefined,
+  policy?: Partial<OrbitAgentExecutionPolicy>,
+): OrbitAgentToolBatch
+
+export function createAgentSyntheticToolResults(
+  toolCalls: OrbitAgentToolCall[],
+  reason?: string,
+): Array<{ role: 'tool'; tool_call_id: string; content: string }>
+
+export function normalizeAgentToolBatchJournal(raw: unknown): OrbitAgentToolBatchJournal | null
+
+export function createAgentToolBatchJournal(
+  assistant: { tool_calls?: OrbitAgentToolCall[] } | null | undefined,
+  policy?: Partial<OrbitAgentExecutionPolicy>,
+): OrbitAgentToolBatchJournal
+
+export function recordAgentToolBatchResult(
+  journal: OrbitAgentToolBatchJournal,
+  result: OrbitAgentToolResult,
+): OrbitAgentToolBatchJournal
+
+export function deferAgentToolBatchMessage(
+  journal: OrbitAgentToolBatchJournal,
+  message: OrbitAgentMessage,
+): OrbitAgentToolBatchJournal
+
+export function closeAgentToolBatchJournal(
+  journal: OrbitAgentToolBatchJournal,
+  reason?: string,
+): {
+  journal: OrbitAgentToolBatchJournal
+  toolMessages: OrbitAgentToolResult[]
+  deferredMessages: OrbitAgentMessage[]
+  messages: OrbitAgentMessage[]
+  syntheticCount: number
+}
+
+export function agentTranscriptProtocolIssues(
+  messages: unknown[],
+  options?: { allowIncompleteTail?: boolean },
+): string[]
+
+export function assertAgentTranscriptProtocol(
+  messages: unknown[],
+  options?: { allowIncompleteTail?: boolean },
+): true
 
 export function renderSurfaceActivityIssues(
   reports: OrbitAgentRenderSurfaceReport[],
@@ -472,6 +608,7 @@ export function createAgentCheckpoint(input: {
   plan?: OrbitProAgentPlan | null
   workspace?: Partial<OrbitAgentCheckpoint['workspace']>
   pendingToolOperation?: OrbitAgentCheckpoint['pendingToolOperation']
+  pendingToolBatch?: OrbitAgentToolBatchJournal | null
 }): OrbitAgentCheckpoint
 
 export function compactAgentMessagesIfNeeded(

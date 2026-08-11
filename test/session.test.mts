@@ -35,11 +35,21 @@ test('session header keeps the active workspace and permissions visible', () => 
   })
   assert.match(header, /Orbit v/)
   assert.match(header, /~\/games\/runner/)
-  assert.match(header, /Orbit Cloud · auto model/)
+  assert.match(header, /Orbit Cloud · DeepSeek V4 Pro/)
   assert.match(header, /shell on/)
   assert.match(header, /images on/)
   assert.match(header, /Ctrl\+C interrupts only the active run/)
   assert.doesNotMatch(header, /\u001b\[/)
+})
+
+test('session header leaves BYOK automatic model selection provider-owned', () => {
+  const header = renderSessionHeader({
+    config: { ...baseConfig, mode: 'byok' },
+    workspace: '/opt/player/games/runner',
+    color: false,
+  })
+  assert.match(header, /BYOK · openrouter · auto model/)
+  assert.doesNotMatch(header, /DeepSeek V4 Pro/)
 })
 
 test('interactive session keeps accepting follow-up requests and prints summaries instead of JSON', async () => {

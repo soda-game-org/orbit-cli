@@ -26,6 +26,9 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm --prefix ../.. run check"
   },
+  "dependencies": {
+    "@soda_game/orbit-agent-core": "0.4.1"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

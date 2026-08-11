@@ -7,6 +7,7 @@ import { sniffImage } from '../attachments.mjs'
 import { appDirectories, canonicalDirectory, collectStream, ensurePrivateDirectory, isContained, openExternal, publicError, type AppDirectories } from '../util.mjs'
 import { providerCredentialAccount } from '../credentials.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../constants.mjs'
+import { ORBIT_MANAGED_DEFAULT_MODEL, managedOrbitModelFromCatalog } from '../model-display.mjs'
 import { withRecoveryView } from '../recovery-view.mjs'
 import type { OrbitRun } from '../types.mjs'
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
@@ -227,6 +228,14 @@ export class WebCliServer {
     }
     if (!url.pathname.startsWith('/api/') || !this.#authorized(request)) return send(response, 403, { error: 'Forbidden' })
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
+      const auth = await this.auth.status()
+      let managedModel = ORBIT_MANAGED_DEFAULT_MODEL
+      if ((auth.authenticated || auth.signedIn || auth.user) && typeof this.apiFactory === 'function') {
+        try {
+          const api = this.apiFactory('cli_gui')
+          if (typeof api?.models === 'function') managedModel = managedOrbitModelFromCatalog(await api.models())
+        } catch {}
+      }
       const providers = await Promise.all(Object.entries(PROVIDERS).map(async ([id, definition]) => ({
         id,
         label: definition.label,
@@ -238,7 +247,8 @@ export class WebCliServer {
       const runs = await Promise.all((await this.store.list()).map(runDisplayMetadata))
       return send(response, 200, {
         config: await this.config.get(),
-        auth: await this.auth.status(),
+        auth,
+        managedModel,
         account: this.account?.status
           ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
           : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },

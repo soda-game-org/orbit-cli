@@ -5,6 +5,11 @@
  * content. Hosts inject a credential lookup and may add public client headers.
  */
 
+import {
+  assertAgentTranscriptProtocol,
+  projectAgentMessagesForProvider,
+} from '@soda_game/orbit-agent-core'
+
 type JsonRecord = Record<string, any>
 
 export type OrbitCodingProviderId =
@@ -232,6 +237,78 @@ function responsesContent(content: unknown): string | JsonRecord[] {
   return items
 }
 
+function assertProviderTranscript(messages: unknown): asserts messages is JsonRecord[] {
+  if (!Array.isArray(messages)) throw new TypeError('Provider messages must be an array')
+  assertAgentTranscriptProtocol(messages)
+  const roles = new Set(['user', 'assistant', 'tool', 'system', 'developer'])
+  for (const [index, message] of messages.entries()) {
+    if (!message || typeof message !== 'object' || Array.isArray(message) || !roles.has(message.role)) {
+      throw new TypeError(`Provider message ${index + 1} is invalid`)
+    }
+    if (message.role === 'tool') {
+      if (typeof message.tool_call_id !== 'string' || !message.tool_call_id.trim() || typeof message.content !== 'string') {
+        throw new TypeError(`Provider tool result ${index + 1} is invalid`)
+      }
+      continue
+    }
+    if (message.role === 'assistant') {
+      if (message.content != null && typeof message.content !== 'string') {
+        throw new TypeError(`Provider assistant message ${index + 1} has invalid content`)
+      }
+      if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) {
+        throw new TypeError(`Provider assistant message ${index + 1} has invalid tool calls`)
+      }
+      for (const [callIndex, call] of (message.tool_calls || []).entries()) {
+        if (!call || typeof call !== 'object'
+          || typeof call.id !== 'string' || !call.id.trim() || call.id !== call.id.trim()
+          || call.type !== 'function'
+          || !call.function || typeof call.function !== 'object'
+          || typeof call.function.name !== 'string' || !call.function.name.trim()
+          || typeof call.function.arguments !== 'string') {
+          throw new TypeError(`Provider assistant message ${index + 1} has invalid function payload at tool call ${callIndex + 1}`)
+        }
+      }
+      continue
+    }
+    if (typeof message.content !== 'string' && !Array.isArray(message.content)) {
+      throw new TypeError(`Provider message ${index + 1} has invalid content`)
+    }
+  }
+}
+
+function canonicalResponsesAssistantItems(message: JsonRecord): JsonRecord[] {
+  const calls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).filter((call) => call && typeof call === 'object')
+  const callsById = new Map(calls.flatMap((call) => typeof call.id === 'string' && call.id.trim()
+    ? [[call.id.trim(), call] as const]
+    : []))
+  const seen = new Set<string>()
+  const output: JsonRecord[] = []
+  let hasAssistantMessage = false
+  for (const raw of Array.isArray(message.response_items) ? message.response_items : []) {
+    if (!raw || typeof raw !== 'object' || typeof raw.type !== 'string') continue
+    if (raw.type !== 'function_call') {
+      if (raw.type === 'function_call_output') continue
+      if (raw.type === 'message' && raw.role !== 'assistant') continue
+      output.push(raw)
+      if (raw.type === 'message') hasAssistantMessage = true
+      continue
+    }
+    const id = typeof raw.call_id === 'string' ? raw.call_id.trim() : typeof raw.id === 'string' ? raw.id.trim() : ''
+    const call = callsById.get(id)
+    if (!call || seen.has(id) || typeof call.function?.name !== 'string' || typeof call.function.arguments !== 'string') continue
+    output.push({ ...raw, call_id: id, name: call.function.name, arguments: call.function.arguments })
+    seen.add(id)
+  }
+  if (!hasAssistantMessage && typeof message.content === 'string' && message.content) {
+    output.push({ role: 'assistant', content: message.content })
+  }
+  for (const [id, call] of callsById) {
+    if (seen.has(id) || typeof call.function?.name !== 'string' || typeof call.function.arguments !== 'string') continue
+    output.push({ type: 'function_call', call_id: id, name: call.function.name, arguments: call.function.arguments })
+  }
+  return output
+}
+
 export function responsesInput(messages: JsonRecord[]): JsonRecord[] {
   const input: JsonRecord[] = []
   for (const message of Array.isArray(messages) ? messages : []) {
@@ -242,7 +319,7 @@ export function responsesInput(messages: JsonRecord[]): JsonRecord[] {
     }
     if (message.role === 'assistant') {
       if (Array.isArray(message.response_items)) {
-        for (const item of message.response_items) if (item && typeof item === 'object' && typeof item.type === 'string') input.push(item)
+        input.push(...canonicalResponsesAssistantItems(message))
         continue
       }
       if (typeof message.content === 'string' && message.content) input.push({ role: 'assistant', content: message.content })
@@ -267,23 +344,26 @@ export function responsesTools(tools: JsonRecord[]): JsonRecord[] {
     : [])
 }
 
-export function buildProviderRequest({ provider, model, messages, tools = [], system = '', maxOutputTokens = DEFAULT_MODEL_OUTPUT_TOKENS }: Omit<OrbitProviderCompletionInput, 'apiKey' | 'fetchImpl' | 'clientHeaders' | 'signal' | 'onRetry'>): { definition: OrbitProviderDefinition; modelId: string; url: string; body: JsonRecord } {
+export function buildProviderRequest({ provider, model, messages, tools = [], system = '', maxOutputTokens }: Omit<OrbitProviderCompletionInput, 'apiKey' | 'fetchImpl' | 'clientHeaders' | 'signal' | 'onRetry'>): { definition: OrbitProviderDefinition; modelId: string; url: string; body: JsonRecord } {
+  const providerMessages = projectAgentMessagesForProvider(messages) as JsonRecord[]
+  assertProviderTranscript(providerMessages)
   const definition = codingProvider(provider)
   const modelId = selectedProviderModel(model, definition)
   const isResponses = definition.protocol === 'responses'
+  const explicitOutputLimit = maxOutputTokens === undefined ? undefined : outputLimit(maxOutputTokens)
   const body = isResponses ? {
     model: modelId,
     instructions: system || undefined,
-    input: responsesInput(messages),
+    input: responsesInput(providerMessages),
     ...(tools.length ? { tools: responsesTools(tools), tool_choice: 'auto', parallel_tool_calls: false } : {}),
     ...(definition.reasoningEffort ? { reasoning: { effort: definition.reasoningEffort } } : {}),
-    max_output_tokens: outputLimit(maxOutputTokens),
+    ...(explicitOutputLimit === undefined ? {} : { max_output_tokens: explicitOutputLimit }),
     store: false,
   } : {
     model: modelId,
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...(Array.isArray(messages) ? messages : [])],
+    messages: [...(system ? [{ role: 'system', content: system }] : []), ...providerMessages],
     ...(tools.length ? { tools } : {}),
-    max_tokens: outputLimit(maxOutputTokens),
+    ...(explicitOutputLimit === undefined ? {} : { max_tokens: explicitOutputLimit }),
     stream: false,
   }
   return {
@@ -405,7 +485,7 @@ async function retryDelay(milliseconds: number, signal?: AbortSignal | null): Pr
 
 export async function completeWithProvider({
   provider, apiKey, model, messages, tools = [], system = '',
-  maxOutputTokens = DEFAULT_MODEL_OUTPUT_TOKENS, signal, onRetry,
+  maxOutputTokens, signal, onRetry,
   fetchImpl = fetch, clientHeaders = {},
 }: OrbitProviderCompletionInput): Promise<OrbitProviderAssistant> {
   const request = buildProviderRequest({ provider, model, messages, tools, system, maxOutputTokens })

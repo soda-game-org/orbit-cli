@@ -1,4 +1,5 @@
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
+import type { OrbitAgentExecutionState, OrbitAgentToolBatchJournal } from '@soda_game/orbit-agent-core'
 
 export type OrbitClientSource = 'cli' | 'cli_gui'
 export type OrbitMode = 'orbit' | 'byok'
@@ -35,6 +36,13 @@ export interface OrbitReference extends Record<string, any> {
   path?: string
 }
 
+export interface OrbitToolBatchControl {
+  errors: Array<{ key: string; name: string }>
+  validationFailures: string[]
+  validationObserved: boolean
+  finishRequested: boolean
+}
+
 export interface OrbitRun extends Record<string, any> {
   schema: string
   id: string
@@ -63,6 +71,9 @@ export interface OrbitRun extends Record<string, any> {
   cloudRunId: string | null
   pendingModelCall: Record<string, any> | null
   pendingTool: { id: string; name: string; arguments: string; startedAt: string } | null
+  pendingToolBatch?: OrbitAgentToolBatchJournal | null
+  pendingToolBatchControl?: OrbitToolBatchControl | null
+  executionState?: OrbitAgentExecutionState | null
   unsafeResumeRequired: boolean
   lastError: { code: string; message: string } | null
   result: Record<string, any> | null
