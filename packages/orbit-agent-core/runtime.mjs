@@ -5,7 +5,7 @@
  * E2B imports. Those capabilities belong to host adapters.
  */
 
-export const ORBIT_PRO_AGENT_CORE_VERSION = 'orbit-pro-agent-core/0.4.0'
+export const ORBIT_PRO_AGENT_CORE_VERSION = 'orbit-pro-agent-core/0.4.1'
 
 /**
  * Portable execution policy. Hosts may provide capabilities, credentials and
@@ -22,6 +22,125 @@ export const ORBIT_AGENT_EXECUTION_POLICY = Object.freeze({
   repeatedValidationFailureLimit: 8,
   maxToolOutputChars: 48_000,
 })
+
+/**
+ * Host-only tool capability metadata. The Symbol sidecar is deliberately
+ * non-enumerable so provider tool JSON remains limited to the wire schema.
+ */
+export const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA = 'orbit.agent-tool-capability.v1'
+export const ORBIT_AGENT_TOOL_CAPABILITY = Symbol.for(ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA)
+
+function agentToolSpecName(tool) {
+  if (typeof tool === 'string') return tool.trim()
+  return String(tool?.function?.name || '').trim()
+}
+
+export function normalizeAgentToolCapability(raw = {}) {
+  const source = executionObject(raw)
+  const prePlan = ['establish', 'observe', 'deny'].includes(source.prePlan) ? source.prePlan : 'deny'
+  const observationScope = prePlan === 'observe' && ['input', 'source'].includes(source.observationScope)
+    ? source.observationScope
+    : null
+  const effect = ['read', 'write', 'execute', 'control'].includes(source.effect) ? source.effect : 'control'
+  const parallel = ['safe', 'serial'].includes(source.parallel) ? source.parallel : 'serial'
+  const retry = ['safe', 'idempotent', 'unsafe'].includes(source.retry) ? source.retry : 'unsafe'
+  const rawBudget = executionObject(source.budget)
+  const maxPrePlanCalls = prePlan === 'observe'
+    ? Math.min(1_000, executionCount(rawBudget.maxPrePlanCalls))
+    : 0
+  return Object.freeze({
+    schema: ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA,
+    prePlan,
+    observationScope,
+    effect,
+    parallel,
+    retry,
+    budget: Object.freeze({ maxPrePlanCalls }),
+  })
+}
+
+/** Attach host-only capability metadata without changing provider JSON. */
+export function defineAgentToolCapability(toolSpec, capability) {
+  if (!toolSpec || typeof toolSpec !== 'object') throw new TypeError('Agent tool spec must be an object')
+  if (!agentToolSpecName(toolSpec)) throw new TypeError('Agent tool spec requires function.name')
+  const annotated = { ...toolSpec }
+  Object.defineProperty(annotated, ORBIT_AGENT_TOOL_CAPABILITY, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: normalizeAgentToolCapability(capability),
+  })
+  return annotated
+}
+
+/** Build a serializable host registry from declarations or annotated specs. */
+export function createAgentToolCapabilityRegistry(entries = {}) {
+  const registry = {}
+  const add = (name, capability) => {
+    const key = agentToolSpecName(name)
+    if (!key || !capability) return
+    registry[key] = normalizeAgentToolCapability(capability)
+  }
+  if (Array.isArray(entries)) {
+    for (const entry of entries) {
+      if (Array.isArray(entry)) add(entry[0], entry[1])
+      else add(entry, entry?.[ORBIT_AGENT_TOOL_CAPABILITY])
+    }
+  } else {
+    for (const [name, capability] of Object.entries(executionObject(entries))) add(name, capability)
+  }
+  return Object.freeze(registry)
+}
+
+export function getAgentToolCapability(tool, registry = {}) {
+  if (tool && typeof tool === 'object' && tool[ORBIT_AGENT_TOOL_CAPABILITY]) {
+    return normalizeAgentToolCapability(tool[ORBIT_AGENT_TOOL_CAPABILITY])
+  }
+  const name = agentToolSpecName(tool)
+  const declared = name ? executionObject(registry)[name] : null
+  return normalizeAgentToolCapability(declared || {})
+}
+
+/**
+ * Decide whether a tool may run before an execution plan exists. Input
+ * observations are task-mode independent; source observations additionally
+ * require the host to confirm that existing source is authoritative.
+ */
+export function evaluateAgentToolPrePlan(tool, options = {}) {
+  const input = executionObject(options)
+  const capability = getAgentToolCapability(tool, input.registry)
+  if (input.hasPlan === true) {
+    return Object.freeze({ allowed: true, decision: 'planned', consumesObservation: false, capability })
+  }
+  if (capability.prePlan === 'establish') {
+    return Object.freeze({ allowed: true, decision: 'establish', consumesObservation: false, capability })
+  }
+  if (capability.prePlan !== 'observe' || !capability.observationScope) {
+    return Object.freeze({ allowed: false, decision: 'denied', consumesObservation: false, capability })
+  }
+  const scope = capability.observationScope
+  if (scope === 'source' && input.allowSourceObservation !== true) {
+    return Object.freeze({ allowed: false, decision: 'source_not_authorized', consumesObservation: false, capability })
+  }
+  const counts = executionObject(input.observationCounts)
+  const observed = executionCount(counts[scope])
+  const limit = capability.budget.maxPrePlanCalls
+  if (limit <= 0 || observed >= limit) {
+    return Object.freeze({ allowed: false, decision: 'budget_exhausted', consumesObservation: false, capability, scope, observed, limit })
+  }
+  return Object.freeze({ allowed: true, decision: 'observe', consumesObservation: true, capability, scope, observed, limit })
+}
+
+/** Preserve a repeated error streak when that signature is still in a sibling batch. */
+export function selectAgentToolBatchErrorKey(errorKeys, previousKey = '') {
+  const unique = []
+  for (const value of Array.isArray(errorKeys) ? errorKeys : []) {
+    const key = executionKey(value)
+    if (key && !unique.includes(key)) unique.push(key)
+  }
+  const previous = executionKey(previousKey)
+  return previous && unique.includes(previous) ? previous : (unique[0] || '')
+}
 
 /**
  * Host-neutral rendering invariant used by every Arcade coding surface. Target
@@ -56,6 +175,238 @@ function executionCount(value) {
 
 function executionKey(value) {
   return String(value || '').trim().slice(0, 1_200)
+}
+
+function agentToolCalls(value) {
+  return Array.isArray(value?.tool_calls) ? value.tool_calls : []
+}
+
+function agentToolCallId(call) {
+  return typeof call?.id === 'string' ? call.id.trim() : ''
+}
+
+export const ORBIT_AGENT_TOOL_BATCH_SCHEMA = 'orbit.agent-tool-batch.v1'
+
+export function splitAgentToolCallBatch(assistant, policy = ORBIT_AGENT_EXECUTION_POLICY) {
+  const allCalls = agentToolCalls(assistant)
+  assertAgentTranscriptProtocol([{ role: 'assistant', tool_calls: allCalls }], { allowIncompleteTail: true })
+  const limit = Math.max(1, executionCount(executionObject(policy).maxToolCallsPerTurn || ORBIT_AGENT_EXECUTION_POLICY.maxToolCallsPerTurn))
+  return { allCalls, executableCalls: allCalls.slice(0, limit), skippedCalls: allCalls.slice(limit), limit }
+}
+
+export function createAgentSyntheticToolResults(toolCalls, reason = 'the host ended this tool batch before execution') {
+  const detail = executionKey(reason) || 'the host ended this tool batch before execution'
+  return (Array.isArray(toolCalls) ? toolCalls : []).map((call, index) => ({
+    role: 'tool',
+    tool_call_id: agentToolCallId(call) || `orbit_synthetic_tool_${index + 1}`,
+    content: `Skipped before execution: ${detail}`,
+  }))
+}
+
+function cloneAgentToolCall(call) {
+  return { ...call, ...(call?.function && typeof call.function === 'object' ? { function: { ...call.function } } : {}) }
+}
+
+function normalizeAgentToolBatchResult(result) {
+  if (!result || typeof result !== 'object' || result.role !== 'tool') return null
+  if (typeof result.tool_call_id !== 'string') return null
+  const id = result.tool_call_id.trim()
+  if (!id || result.tool_call_id !== id) return null
+  return {
+    ...result,
+    role: 'tool',
+    tool_call_id: id,
+    content: typeof result.content === 'string' ? result.content : JSON.stringify(result.content ?? ''),
+  }
+}
+
+export function normalizeAgentToolBatchJournal(raw) {
+  const value = executionObject(raw)
+  if (value.schema !== ORBIT_AGENT_TOOL_BATCH_SCHEMA) return null
+  const calls = agentToolCalls({ tool_calls: value.calls }).map(cloneAgentToolCall)
+  try {
+    assertAgentTranscriptProtocol([{ role: 'assistant', tool_calls: calls }], { allowIncompleteTail: true })
+  } catch {
+    return null
+  }
+  const limit = Math.min(calls.length, Math.max(0, executionCount(value.limit)))
+  if (calls.length && limit < 1) return null
+  const ids = new Set(calls.map(agentToolCallId))
+  const results = []
+  const responded = new Set()
+  for (const rawResult of Array.isArray(value.results) ? value.results : []) {
+    const result = normalizeAgentToolBatchResult(rawResult)
+    if (!result || !ids.has(result.tool_call_id) || responded.has(result.tool_call_id)) return null
+    responded.add(result.tool_call_id)
+    results.push(result)
+  }
+  const rawDeferredMessages = Array.isArray(value.deferredMessages) ? value.deferredMessages : []
+  if (rawDeferredMessages.some((message) => (
+    !message
+    || typeof message !== 'object'
+    || message.role === 'tool'
+    || agentToolCalls(message).length > 0
+  ))) return null
+  const deferredMessages = rawDeferredMessages.map((message) => ({ ...message }))
+  if (!['open', 'closed'].includes(value.status)) return null
+  const status = value.status
+  if (status === 'closed' && responded.size !== calls.length) return null
+  const canonicalResults = status === 'closed'
+    ? calls.map((call) => results.find((result) => result.tool_call_id === agentToolCallId(call)))
+    : results
+  if (canonicalResults.some((result) => !result)) return null
+  return { schema: ORBIT_AGENT_TOOL_BATCH_SCHEMA, status, calls, limit, results: canonicalResults, deferredMessages }
+}
+
+export function createAgentToolBatchJournal(assistant, policy = ORBIT_AGENT_EXECUTION_POLICY) {
+  const split = splitAgentToolCallBatch(assistant, policy)
+  return {
+    schema: ORBIT_AGENT_TOOL_BATCH_SCHEMA,
+    status: 'open',
+    calls: split.allCalls.map(cloneAgentToolCall),
+    limit: split.executableCalls.length,
+    results: [],
+    deferredMessages: [],
+  }
+}
+
+export function recordAgentToolBatchResult(rawJournal, rawResult) {
+  const journal = normalizeAgentToolBatchJournal(rawJournal)
+  const result = normalizeAgentToolBatchResult(rawResult)
+  if (!journal || journal.status !== 'open') throw new TypeError('Agent tool batch journal is invalid or already closed')
+  if (!result) throw new TypeError('Agent tool result is invalid')
+  const ids = new Set(journal.calls.map(agentToolCallId))
+  if (!ids.has(result.tool_call_id)) throw new TypeError(`Agent tool result does not belong to this batch: ${result.tool_call_id}`)
+  if (journal.results.some((entry) => entry.tool_call_id === result.tool_call_id)) {
+    throw new TypeError(`Agent tool result was already recorded: ${result.tool_call_id}`)
+  }
+  return { ...journal, results: [...journal.results, result] }
+}
+
+export function deferAgentToolBatchMessage(rawJournal, message) {
+  const journal = normalizeAgentToolBatchJournal(rawJournal)
+  if (!journal || journal.status !== 'open') throw new TypeError('Agent tool batch journal is invalid or already closed')
+  if (!message || typeof message !== 'object' || message.role === 'tool' || agentToolCalls(message).length > 0) {
+    throw new TypeError('Deferred agent tool-batch message must be a non-tool message')
+  }
+  return { ...journal, deferredMessages: [...journal.deferredMessages, { ...message }] }
+}
+
+export function closeAgentToolBatchJournal(rawJournal, reason) {
+  const journal = normalizeAgentToolBatchJournal(rawJournal)
+  if (!journal) throw new TypeError('Agent tool batch journal is invalid')
+  if (journal.status === 'closed') {
+    return {
+      journal,
+      toolMessages: [...journal.results],
+      deferredMessages: [...journal.deferredMessages],
+      messages: [...journal.results, ...journal.deferredMessages],
+      syntheticCount: 0,
+    }
+  }
+  const byId = new Map(journal.results.map((result) => [result.tool_call_id, result]))
+  let syntheticCount = 0
+  const toolMessages = journal.calls.map((call) => {
+    const id = agentToolCallId(call)
+    const existing = byId.get(id)
+    if (existing) return existing
+    syntheticCount += 1
+    return createAgentSyntheticToolResults([call], reason)[0]
+  })
+  const closedJournal = { ...journal, status: 'closed', results: toolMessages }
+  assertAgentTranscriptProtocol([
+    { role: 'assistant', tool_calls: closedJournal.calls },
+    ...toolMessages,
+    ...closedJournal.deferredMessages,
+  ])
+  return {
+    journal: closedJournal,
+    toolMessages,
+    deferredMessages: [...closedJournal.deferredMessages],
+    messages: [...toolMessages, ...closedJournal.deferredMessages],
+    syntheticCount,
+  }
+}
+
+export function agentTranscriptProtocolIssues(messages, options = {}) {
+  const source = Array.isArray(messages) ? messages : []
+  const allowIncompleteTail = options?.allowIncompleteTail === true
+  const issues = []
+  let pending = null
+  for (let index = 0; index < source.length; index += 1) {
+    const message = source[index]
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      if (pending) {
+        const missing = [...pending.ids].filter((id) => !pending.responded.has(id))
+        if (missing.length) issues.push(`message ${index + 1}: malformed message interrupted an assistant tool batch with ${missing.length} unresolved call(s)`)
+        pending = null
+      }
+      issues.push(`message ${index + 1}: message must be an object`)
+      continue
+    }
+    if (pending) {
+      if (message.role === 'tool') {
+        const id = String(message.tool_call_id || '').trim()
+        if (typeof message.tool_call_id !== 'string' || !id || message.tool_call_id !== id) issues.push(`message ${index + 1}: tool result has a non-canonical tool_call_id`)
+        else if (!pending.ids.has(id)) issues.push(`message ${index + 1}: tool result does not match the active assistant tool batch`)
+        else if (pending.responded.has(id)) issues.push(`message ${index + 1}: duplicate tool result for ${id}`)
+        else pending.responded.add(id)
+        if (pending.responded.size === pending.ids.size) pending = null
+        continue
+      }
+      const missing = [...pending.ids].filter((id) => !pending.responded.has(id))
+      if (missing.length) issues.push(`message ${index + 1}: ${String(message.role || 'non-tool')} message interrupted an assistant tool batch with ${missing.length} unresolved call(s)`)
+      pending = null
+    }
+    if (message.role === 'assistant') {
+      const calls = agentToolCalls(message)
+      if (!calls.length) continue
+      const ids = new Set()
+      for (const [callIndex, call] of calls.entries()) {
+        if (!call || typeof call !== 'object') {
+          issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} is malformed`)
+          continue
+        }
+        const id = agentToolCallId(call)
+        if (!id) issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} has no id`)
+        else if (call.id !== id) issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} has a non-canonical id`)
+        else if (ids.has(id)) issues.push(`message ${index + 1}: duplicate assistant tool call id ${id}`)
+        else ids.add(id)
+        if (call.type !== 'function') issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} is not a function call`)
+        if (!call.function || typeof call.function !== 'object') {
+          issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} has no function payload`)
+        } else {
+          if (typeof call.function.name !== 'string' || !call.function.name.trim()) {
+            issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} has no function name`)
+          }
+          if (typeof call.function.arguments !== 'string') {
+            issues.push(`message ${index + 1}: assistant tool call ${callIndex + 1} has invalid function arguments`)
+          }
+        }
+      }
+      if (ids.size) pending = { ids, responded: new Set() }
+      continue
+    }
+    if (message.role === 'tool') {
+      issues.push(`message ${index + 1}: orphan tool result ${String(message.tool_call_id || '').trim() || '(missing id)'}`)
+      continue
+    }
+    if (!['system', 'developer', 'user'].includes(message.role)) issues.push(`message ${index + 1}: unsupported message role ${String(message.role || '(missing)')}`)
+  }
+  if (pending && !allowIncompleteTail) {
+    const missing = [...pending.ids].filter((id) => !pending.responded.has(id))
+    if (missing.length) issues.push(`transcript ended with ${missing.length} unresolved assistant tool call(s)`)
+  }
+  return issues
+}
+
+export function assertAgentTranscriptProtocol(messages, options = {}) {
+  const issues = agentTranscriptProtocolIssues(messages, options)
+  if (!issues.length) return true
+  const error = new Error(`Agent transcript protocol violation: ${issues.slice(0, 4).join('; ')}`)
+  error.code = 'ORBIT_AGENT_TRANSCRIPT_PROTOCOL'
+  error.issues = issues
+  throw error
 }
 
 function renderSurfaceNumber(value, fallback = 0) {
@@ -145,7 +496,7 @@ export function transitionAgentExecutionState(state, event, policy = ORBIT_AGENT
     if (next.consecutiveNoTools >= executionCount(limits.consecutiveNoToolLimit)) {
       stopReason = 'no_tool_limit'
     }
-  } else if (input.type === 'tool_result') {
+  } else if (input.type === 'tool_result' || input.type === 'tool_batch_result') {
     if (input.ok === true) {
       next.lastToolErrorKey = ''
       next.repeatedToolErrors = 0
@@ -153,7 +504,7 @@ export function transitionAgentExecutionState(state, event, policy = ORBIT_AGENT
       const key = executionKey(input.key)
       next.repeatedToolErrors = key && key === next.lastToolErrorKey ? next.repeatedToolErrors + 1 : 1
       next.lastToolErrorKey = key
-      if (next.repeatedToolErrors >= executionCount(limits.repeatedToolErrorWarning)) {
+      if (next.repeatedToolErrors === executionCount(limits.repeatedToolErrorWarning)) {
         warning = 'repeated_tool_error'
       }
       if (next.repeatedToolErrors >= executionCount(limits.repeatedToolErrorLimit)) {
@@ -195,6 +546,7 @@ export const ORBIT_AGENT_MODEL_OUTPUT_LIMITS = Object.freeze({
 export const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA = 'orbit.agent-capability-profile.v1'
 export const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA = 'orbit.agent-semantic-summary.v1'
 export const ORBIT_AGENT_CHECKPOINT_SCHEMA = 'orbit.agent-checkpoint.v1'
+export const ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA = 'orbit.agent-internal-message.v1'
 const ORBIT_CONTEXT_SUMMARY_MARKER = Symbol.for('orbit.agent-context-summary.v1')
 
 export const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze({
@@ -204,7 +556,7 @@ export const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze({
     semanticCompaction: 'model',
     checkpointPersistence: 'project',
     workspaceSnapshot: 'digest',
-    pendingToolRecovery: 'inspect',
+    pendingToolRecovery: 'none',
     // Desktop summaries traverse the Worker gateway's 220k-char / 384KiB
     // envelope. Keep this below that transport boundary after JSON escaping.
     maxSemanticInputTokens: 44_000,
@@ -214,9 +566,7 @@ export const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze({
     schema: ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA,
     executorProfile: 'cli-local',
     semanticCompaction: 'model',
-    // The standalone CLI compacts in process today, but it does not yet
-    // persist the full checkpoint envelope or a resumable tool journal.
-    checkpointPersistence: 'none',
+    checkpointPersistence: 'run',
     workspaceSnapshot: 'none',
     pendingToolRecovery: 'inspect',
     maxSemanticInputTokens: 140_000,
@@ -239,6 +589,16 @@ export const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze({
     // profile must describe that real capability until a summarizer is wired.
     semanticCompaction: 'none',
     checkpointPersistence: 'none',
+    workspaceSnapshot: 'revision',
+    pendingToolRecovery: 'none',
+    maxSemanticInputTokens: 96_000,
+    maxSemanticOutputTokens: 4_000,
+  }),
+  'worker-standard': Object.freeze({
+    schema: ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA,
+    executorProfile: 'worker-standard',
+    semanticCompaction: 'none',
+    checkpointPersistence: 'run',
     workspaceSnapshot: 'revision',
     pendingToolRecovery: 'inspect',
     maxSemanticInputTokens: 96_000,
@@ -811,7 +1171,7 @@ export function createUpdateAgentPlanToolSpec(options = {}) {
   const inspection = options.allowInspectionBeforePlan
     ? ' Required before edits, installs, builds, validation, and finish. A bounded targeted source read/search inspection may happen first when needed; call update_agent_plan immediately after that inspection.'
     : ' First tool call must be update_agent_plan before implementation tools.'
-  return {
+  return defineAgentToolCapability({
     type: 'function',
     function: {
       name: 'update_agent_plan',
@@ -845,7 +1205,12 @@ export function createUpdateAgentPlanToolSpec(options = {}) {
         },
       },
     },
-  }
+  }, {
+    prePlan: 'establish',
+    effect: 'control',
+    parallel: 'serial',
+    retry: 'safe',
+  })
 }
 
 export function estimateAgentTextTokens(text) {
@@ -862,8 +1227,11 @@ export function estimateAgentTextTokens(text) {
 
 function messageTextSize(message) {
   if (!message || typeof message !== 'object') return { chars: 0, tokens: 0 }
-  const values = [message.role, message.content, message.reasoning, message.name, message.tool_call_id]
+  const values = [message.role, message.content, message.reasoning, message.reasoning_content, message.name, message.tool_call_id]
   if (Array.isArray(message.tool_calls)) values.push(JSON.stringify(message.tool_calls))
+  if (Array.isArray(message.reasoning_details)) values.push(JSON.stringify(message.reasoning_details))
+  if (Array.isArray(message.response_items)) values.push(JSON.stringify(message.response_items))
+  if (message.orbit_internal && typeof message.orbit_internal === 'object') values.push(JSON.stringify(message.orbit_internal))
   const text = values.filter((value) => value !== undefined && value !== null).map(String).join('\n')
   return { chars: text.length, tokens: estimateAgentTextTokens(text) }
 }
@@ -909,6 +1277,7 @@ function compactPortableMessage(message, preserveFull) {
   const next = { ...message }
   if (next.role === 'assistant') {
     if (typeof next.reasoning === 'string' && next.reasoning.length > 1200) next.reasoning = '[older reasoning elided]\n' + next.reasoning.slice(-1000)
+    if (typeof next.reasoning_content === 'string' && next.reasoning_content.length > 1200) next.reasoning_content = '[older reasoning elided]\n' + next.reasoning_content.slice(-1000)
     if (typeof next.content === 'string' && next.content.length > 4000) next.content = next.content.slice(0, 1000) + '\n[older assistant text elided]\n' + next.content.slice(-2500)
   } else if (next.role === 'tool' && typeof next.content === 'string' && next.content.length > 6000) {
     next.content = '[older tool result compacted; rerun the tool if exact output is needed]\n' + next.content.slice(-5000)
@@ -917,6 +1286,7 @@ function compactPortableMessage(message, preserveFull) {
   }
   if (typeof next.content === 'string') next.content = redactAgentSensitiveText(next.content)
   if (typeof next.reasoning === 'string') next.reasoning = redactAgentSensitiveText(next.reasoning)
+  if (typeof next.reasoning_content === 'string') next.reasoning_content = redactAgentSensitiveText(next.reasoning_content)
   return next
 }
 
@@ -1146,15 +1516,38 @@ export function normalizeAgentSemanticSummary(raw) {
 }
 
 function isCompactionSummaryMessage(message) {
-  return Boolean(message && message[ORBIT_CONTEXT_SUMMARY_MARKER] === true)
+  if (!message || message.role !== 'user') return false
+  if (message[ORBIT_CONTEXT_SUMMARY_MARKER] === true) return true
+  const internal = message.orbit_internal
+  return Boolean(internal
+    && typeof internal === 'object'
+    && internal.schema === ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA
+    && internal.type === 'context_summary'
+    && Number.isSafeInteger(internal.generation)
+    && internal.generation > 0)
+}
+
+/** Remove host-only message metadata without changing any provider field. */
+export function projectAgentMessagesForProvider(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    if (!message || typeof message !== 'object' || !Object.prototype.hasOwnProperty.call(message, 'orbit_internal')) {
+      return message
+    }
+    const projected = { ...message }
+    delete projected.orbit_internal
+    return projected
+  })
 }
 
 function compactionMessageFingerprint(messages) {
   let hash = 2166136261
   const source = Array.isArray(messages) ? messages : []
   for (const message of source) {
-    const values = [message?.role, message?.tool_call_id, message?.content, message?.reasoning]
+    const values = [message?.role, message?.tool_call_id, message?.content, message?.reasoning, message?.reasoning_content]
     if (Array.isArray(message?.tool_calls)) values.push(JSON.stringify(message.tool_calls))
+    if (Array.isArray(message?.reasoning_details)) values.push(JSON.stringify(message.reasoning_details))
+    if (Array.isArray(message?.response_items)) values.push(JSON.stringify(message.response_items))
+    if (message?.orbit_internal && typeof message.orbit_internal === 'object') values.push(JSON.stringify(message.orbit_internal))
     const text = values.filter((value) => value !== undefined && value !== null).map(String).join('|')
     for (let index = 0; index < text.length; index += 1) {
       hash ^= text.charCodeAt(index)
@@ -1256,6 +1649,7 @@ function recentCompactionUserMessages(source, firstUser, limits) {
 
 export function prepareAgentMessageCompaction(messages, options = {}) {
   const source = Array.isArray(messages) ? messages : []
+  assertAgentTranscriptProtocol(source)
   const policy = resolvedContextPolicy(options.policy || {})
   const before = agentMessageBudget(source, policy)
   const needed = before.approxChars > policy.softChars
@@ -1370,7 +1764,15 @@ function compactionSummaryMessage(preparation, summary, options) {
     ...(preparation.durableFacts || []).map((fact) => 'Pinned host fact: ' + fact),
     'Workspace files and future tool observations remain authoritative. Re-read exact source or protected skill text when needed.',
   ].filter(Boolean)
-  const message = { role: 'user', content: parts.join('\n\n') }
+  const message = {
+    role: 'user',
+    content: parts.join('\n\n'),
+    orbit_internal: Object.freeze({
+      schema: ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA,
+      type: 'context_summary',
+      generation: preparation.generation,
+    }),
+  }
   Object.defineProperty(message, ORBIT_CONTEXT_SUMMARY_MARKER, {
     value: true,
     configurable: false,
@@ -1408,6 +1810,7 @@ function assembleCompactedMessages(preparation, summaryMessage, tailBlocks) {
 
 export function commitAgentMessageCompaction(messages, preparation, rawSemanticSummary, options = {}) {
   const source = Array.isArray(messages) ? messages : []
+  assertAgentTranscriptProtocol(source)
   const current = agentMessageBudget(source, preparation && preparation.policy ? preparation.policy : {})
   if (!preparation || preparation.schema !== 'orbit.agent-compaction-preparation.v1' || !preparation.needed) {
     return { compacted: false, reason: 'not_needed', before: preparation?.before || current, after: current }
@@ -1440,6 +1843,7 @@ export function commitAgentMessageCompaction(messages, preparation, rawSemanticS
     after = agentMessageBudget(compacted, preparation.policy)
   }
   source.splice(0, source.length, ...compacted)
+  assertAgentTranscriptProtocol(source)
   return {
     compacted: true,
     before: preparation.before,
@@ -1494,6 +1898,10 @@ export function normalizeAgentCheckpoint(raw) {
       targetPaths: cleanCompactionTextArray(pending.targetPaths, 32, 500),
     }
   }
+  const pendingToolBatch = value.pendingToolBatch == null
+    ? null
+    : normalizeAgentToolBatchJournal(redactAgentSensitiveValue(value.pendingToolBatch))
+  if (value.pendingToolBatch != null && !pendingToolBatch) return null
   const runtime = compactionObject(value.runtime) || {}
   const normalizedPlan = value.plan == null
     ? null
@@ -1539,6 +1947,7 @@ export function normalizeAgentCheckpoint(raw) {
       changedPaths: cleanCompactionTextArray(workspace.changedPaths, 128, 500),
     },
     pendingToolOperation,
+    pendingToolBatch,
   }
 }
 
@@ -1571,6 +1980,7 @@ export function createAgentCheckpoint(input = {}) {
     plan: input.plan || null,
     workspace: input.workspace || { kind: 'none', changedPaths: [] },
     pendingToolOperation: input.pendingToolOperation || null,
+    pendingToolBatch: input.pendingToolBatch || null,
   }
   const normalized = normalizeAgentCheckpoint(raw)
   if (!normalized) throw new TypeError('Agent checkpoint is invalid')
@@ -1592,6 +2002,11 @@ const CORE_HELPERS = [
   executionObject,
   executionCount,
   executionKey,
+  agentToolSpecName,
+  agentToolCalls,
+  agentToolCallId,
+  cloneAgentToolCall,
+  normalizeAgentToolBatchResult,
   renderSurfaceNumber,
   cleanVisualPlanText,
   visualPlanObject,
@@ -1633,8 +2048,24 @@ const CORE_HELPERS = [
 ]
 
 const CORE_EXPORTS = [
+  ['normalizeAgentToolCapability', normalizeAgentToolCapability],
+  ['defineAgentToolCapability', defineAgentToolCapability],
+  ['createAgentToolCapabilityRegistry', createAgentToolCapabilityRegistry],
+  ['getAgentToolCapability', getAgentToolCapability],
+  ['evaluateAgentToolPrePlan', evaluateAgentToolPrePlan],
+  ['selectAgentToolBatchErrorKey', selectAgentToolBatchErrorKey],
+  ['projectAgentMessagesForProvider', projectAgentMessagesForProvider],
   ['createAgentExecutionState', createAgentExecutionState],
   ['transitionAgentExecutionState', transitionAgentExecutionState],
+  ['splitAgentToolCallBatch', splitAgentToolCallBatch],
+  ['createAgentSyntheticToolResults', createAgentSyntheticToolResults],
+  ['normalizeAgentToolBatchJournal', normalizeAgentToolBatchJournal],
+  ['createAgentToolBatchJournal', createAgentToolBatchJournal],
+  ['recordAgentToolBatchResult', recordAgentToolBatchResult],
+  ['deferAgentToolBatchMessage', deferAgentToolBatchMessage],
+  ['closeAgentToolBatchJournal', closeAgentToolBatchJournal],
+  ['agentTranscriptProtocolIssues', agentTranscriptProtocolIssues],
+  ['assertAgentTranscriptProtocol', assertAgentTranscriptProtocol],
   ['renderSurfaceActivityIssues', renderSurfaceActivityIssues],
   ['normalizeOrbitVisualPlan', normalizeOrbitVisualPlan],
   ['parseOrbitVisualPlanAssistant', parseOrbitVisualPlanAssistant],
@@ -1677,12 +2108,16 @@ export function buildOrbitProAgentCoreModuleSource() {
   const declarations = [
     `const ORBIT_PRO_AGENT_CORE_VERSION = ${JSON.stringify(ORBIT_PRO_AGENT_CORE_VERSION)}`,
     `const ORBIT_AGENT_EXECUTION_POLICY = Object.freeze(${JSON.stringify(ORBIT_AGENT_EXECUTION_POLICY)})`,
+    `const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA)}`,
+    `const ORBIT_AGENT_TOOL_CAPABILITY = Symbol.for(ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA)`,
     `const ORBIT_AGENT_RENDER_SURFACE_CONTRACT = ${JSON.stringify(ORBIT_AGENT_RENDER_SURFACE_CONTRACT)}`,
     `const ORBIT_AGENT_RENDER_SURFACE_POLICY = Object.freeze(${JSON.stringify(ORBIT_AGENT_RENDER_SURFACE_POLICY)})`,
     `const ORBIT_AGENT_MODEL_OUTPUT_LIMITS = Object.freeze(${JSON.stringify(ORBIT_AGENT_MODEL_OUTPUT_LIMITS)})`,
     `const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA)}`,
     `const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA)}`,
     `const ORBIT_AGENT_CHECKPOINT_SCHEMA = ${JSON.stringify(ORBIT_AGENT_CHECKPOINT_SCHEMA)}`,
+    `const ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA)}`,
+    `const ORBIT_AGENT_TOOL_BATCH_SCHEMA = ${JSON.stringify(ORBIT_AGENT_TOOL_BATCH_SCHEMA)}`,
     `const ORBIT_CONTEXT_SUMMARY_MARKER = Symbol.for('orbit.agent-context-summary.v1')`,
     `const ORBIT_AGENT_CAPABILITY_PROFILES = Object.freeze(${JSON.stringify(ORBIT_AGENT_CAPABILITY_PROFILES)})`,
     `const ORBIT_VISUAL_PLAN_MAX_CANDIDATES = ${JSON.stringify(ORBIT_VISUAL_PLAN_MAX_CANDIDATES)}`,
@@ -1695,12 +2130,16 @@ export function buildOrbitProAgentCoreModuleSource() {
   const aliases = [
     'ORBIT_PRO_AGENT_CORE_VERSION',
     'ORBIT_AGENT_EXECUTION_POLICY',
+    'ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA',
+    'ORBIT_AGENT_TOOL_CAPABILITY',
     'ORBIT_AGENT_RENDER_SURFACE_CONTRACT',
     'ORBIT_AGENT_RENDER_SURFACE_POLICY',
     'ORBIT_AGENT_MODEL_OUTPUT_LIMITS',
     'ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA',
     'ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA',
     'ORBIT_AGENT_CHECKPOINT_SCHEMA',
+    'ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA',
+    'ORBIT_AGENT_TOOL_BATCH_SCHEMA',
     'ORBIT_AGENT_CAPABILITY_PROFILES',
     'ORBIT_VISUAL_PLAN_MAX_CANDIDATES',
     'ORBIT_LOOP_ITERATION_POLICY',

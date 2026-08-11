@@ -3,6 +3,12 @@ import process from 'node:process'
 import readline from 'node:readline/promises'
 import { CODING_PROVIDER_IDS, PROVIDERS, RUNTIMES, VERSION } from './constants.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
+import {
+  ORBIT_MANAGED_DEFAULT_MODEL,
+  managedOrbitModelFromCatalog,
+  orbitCodingModelDisplay,
+  type OrbitManagedModelDescriptor,
+} from './model-display.mjs'
 import { publicError } from './util.mjs'
 import type { RunProgressEvent } from './run-manager.mjs'
 import type { OrbitCliConfig, OrbitRun } from './types.mjs'
@@ -83,9 +89,13 @@ function enabled(value: string | undefined, label: string): boolean {
   throw new Error(`Usage: /${label} on|off`)
 }
 
-function sessionMode(config: OrbitCliConfig): string {
-  if (config.mode === 'orbit') return `Orbit Cloud · ${config.model || 'auto model'}`
-  return `BYOK · ${config.provider} · ${config.model || 'auto model'}`
+function sessionMode(
+  config: OrbitCliConfig,
+  managedModel: OrbitManagedModelDescriptor = ORBIT_MANAGED_DEFAULT_MODEL,
+): string {
+  const model = orbitCodingModelDisplay(config.mode, config.model, managedModel)
+  if (config.mode === 'orbit') return `Orbit Cloud · ${model}`
+  return `BYOK · ${config.provider} · ${model}`
 }
 
 export function renderSessionHeader({
@@ -97,6 +107,7 @@ export function renderSessionHeader({
   generate3d = false,
   columns = 88,
   color = true,
+  managedModel = ORBIT_MANAGED_DEFAULT_MODEL,
 }: {
   config: OrbitCliConfig
   workspace: string
@@ -106,11 +117,12 @@ export function renderSessionHeader({
   generate3d?: boolean
   columns?: number
   color?: boolean
+  managedModel?: OrbitManagedModelDescriptor
 }): string {
   const width = Math.max(60, Math.min(Number(columns) || 88, 100))
   const rail = [
     displayPath(workspace, home),
-    sessionMode(config),
+    sessionMode(config, managedModel),
     config.runtime,
     `shell ${allowShell ? 'on' : 'off'}`,
     generateImages ? 'images on' : '',
@@ -323,6 +335,7 @@ export async function runInteractiveSession({
   }
 
   let config = await app.config.get() as OrbitCliConfig
+  let managedModel: OrbitManagedModelDescriptor = ORBIT_MANAGED_DEFAULT_MODEL
   let workspace = path.resolve(cwd)
   let allowShell = false
   let generateImages = false
@@ -334,9 +347,19 @@ export async function runInteractiveSession({
     : 'create'
   let webServer: any = null
 
+  const refreshManagedModel = async (): Promise<void> => {
+    if (config.mode !== 'orbit' || typeof app.apiFactory !== 'function') return
+    const auth = await app.auth.status().catch(() => ({ signedIn: false }))
+    if (!(auth.authenticated || auth.signedIn || auth.user)) return
+    try {
+      const api = app.apiFactory('cli')
+      if (typeof api?.models === 'function') managedModel = managedOrbitModelFromCatalog(await api.models())
+    } catch {}
+  }
+
   const write = (value = '') => stdout.write(`${value}\n`)
   const showHeader = () => write(renderSessionHeader({
-    config, workspace, home, allowShell, generateImages, generate3d,
+    config, workspace, home, allowShell, generateImages, generate3d, managedModel,
     columns: stdout.columns, color,
   }))
 
@@ -380,6 +403,7 @@ export async function runInteractiveSession({
     }
   }
 
+  await refreshManagedModel()
   showHeader()
   try {
     while (!cancelled) {
@@ -412,7 +436,7 @@ export async function runInteractiveSession({
           write([
             paint('Session status', BOLD, color),
             `  workspace   ${workspace}`,
-            `  mode        ${sessionMode(config)}`,
+            `  mode        ${sessionMode(config, managedModel)}`,
             `  runtime     ${config.runtime}`,
             `  assets      images ${generateImages ? 'on' : 'off'} · 3d ${generate3d ? 'on' : 'off'}`,
             `  permission  shell ${allowShell ? 'on' : 'off'}`,
@@ -446,16 +470,17 @@ export async function runInteractiveSession({
         } else if (command === '/mode') {
           if (!['orbit', 'byok'].includes(args[0] || '')) throw new Error('Usage: /mode orbit|byok')
           config = await app.config.update({ mode: args[0] })
-          write(`Mode set to ${sessionMode(config)}`)
+          await refreshManagedModel()
+          write(`Mode set to ${sessionMode(config, managedModel)}`)
         } else if (command === '/provider') {
           if (!CODING_PROVIDER_IDS.includes(args[0] as any)) throw new Error(`Provider must be one of: ${CODING_PROVIDER_IDS.join(', ')}`)
           config = await app.config.update({ mode: 'byok', provider: args[0] })
           write(`Provider set to ${PROVIDERS[config.provider].label}`)
         } else if (command === '/model') {
-          if (!args[0]) write(`Model: ${config.model || 'auto'}`)
+          if (!args[0]) write(`Model: ${orbitCodingModelDisplay(config.mode, config.model, managedModel)}`)
           else {
             config = await app.config.update({ model: args[0] === 'auto' ? '' : args.join(' ') })
-            write(`Model set to ${config.model || 'automatic selection'}`)
+            write(`Model set to ${orbitCodingModelDisplay(config.mode, config.model, managedModel)}`)
           }
         } else if (command === '/runtime') {
           if (!RUNTIMES.has(args[0] || '')) throw new Error(`Runtime must be one of: ${[...RUNTIMES].join(', ')}`)
@@ -487,6 +512,7 @@ export async function runInteractiveSession({
           } else write('Web CLI is already running for this session.')
         } else if (command === '/login') {
           const result = await app.auth.login()
+          await refreshManagedModel()
           write(result?.user?.email ? `Signed in as ${result.user.email}.` : 'Signed in to Orbit Cloud.')
         } else throw new Error(`Unknown command: ${rawCommand}. Type /help to see available commands.`)
       } catch (error) {
