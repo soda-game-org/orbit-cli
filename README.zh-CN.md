@@ -179,6 +179,8 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
+每个附件 occurrence 都是具有稳定身份的独立 Turn 输入；即使两次输入复用同一份已验证图片字节，也不会被合并成一个输入。所选模型支持视觉时，图片只在有界的 provider 请求中临时投影；text-only 模型使用与该图片身份绑定的结构化 observation。Orbit 不会在启动时把所有图片拼成一段摘要，也不会把图片字节或本机路径写进对话 transcript，更不会跨 provider 转发私有图片上下文。
+
 让游戏开发 Agent 在编写游戏代码的同时规划并生成图片素材：
 
 ```sh

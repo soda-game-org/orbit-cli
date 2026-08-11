@@ -180,6 +180,14 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
+Each attachment occurrence is a separate Turn input with a stable identity,
+even when two occurrences share the same verified image bytes. A
+vision-capable selected model receives bounded image parts transiently in the
+provider request. Text-only models use a separate, identity-bound structured
+observation; Orbit does not concatenate every image into one startup summary.
+Image bytes and local paths are not stored in the conversation transcript, and
+private image context is never forwarded across provider boundaries.
+
 Let the game-development agent plan and generate image assets alongside the game code:
 
 ```sh
