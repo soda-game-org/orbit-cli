@@ -28,7 +28,8 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
         tool('2', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
         tool('3', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); function finish(){ OrbitArcade.endGame({score:1}) }' }),
         tool('4', 'validate_project', {}),
-        tool('5', 'finish', {}),
+        tool('5', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build game', status: 'completed', kind: 'code' }] }),
+        tool('6', 'finish', {}),
       ] }
     } },
     threeD: {}, cloudLogs: null,
@@ -45,7 +46,7 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
   assert.ok(progress.some((event) => event.type === 'tool_started' && event.toolName === 'validate_project'))
   const checkpoint = await store.load(run.id)
   assert.equal(checkpoint.state, 'completed')
-  assert.equal(checkpoint.plan.currentTodoId, undefined)
+  assert.equal(checkpoint.plan.currentTodoId, null)
   assert.deepEqual(checkpoint.plan.todos.map((todo) => todo.status), ['completed'])
   const assistantCheckpoint = checkpoint.messages.find((message) => message.role === 'assistant')
   assert.equal(assistantCheckpoint.reasoning_content, 'provider reasoning')

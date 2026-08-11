@@ -1,12 +1,19 @@
 import { canonicalDirectory, id, publicError } from './util.mjs'
 import { ingestReferenceImages, type ReferenceImageMetadata } from './attachments.mjs'
 import { MAX_AGENT_ITERATIONS, MODEL_OUTPUT_TOKENS, PROVIDERS } from './constants.mjs'
+import {
+  ORBIT_AGENT_EXECUTION_POLICY,
+  ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
+  compactAgentMessagesIfNeeded,
+  createAgentExecutionState,
+  transitionAgentExecutionState,
+} from '@soda_game/orbit-agent-core'
 import { agentTools, ToolExecutor } from './tools.mjs'
 import { publicGenericSkill } from './provider.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
 import { OrbitApiError } from './api.mjs'
 import { asError, type OrbitMessage, type OrbitRun, type OrbitToolCall } from './types.mjs'
-import type { OrbitCodingProviderId } from '../packages/orbit-provider-core/index.mjs'
+import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
 
 type Dynamic = Record<string, any>
 
@@ -50,20 +57,6 @@ function removeWithheldNoProgressTail(messages: OrbitMessage[]): OrbitMessage[] 
     copy.pop()
   }
   return copy
-}
-
-function completePlan(plan: Dynamic | null): Dynamic | null {
-  if (!plan || typeof plan !== 'object' || !Array.isArray(plan.todos)) return plan
-  const completed: Dynamic = {
-    ...plan,
-    summary: 'Task completed after validation passed.',
-    blockers: [],
-    todos: plan.todos.map((todo: unknown) => todo && typeof todo === 'object'
-      ? { ...todo, status: 'completed' }
-      : todo),
-  }
-  delete completed.currentTodoId
-  return completed
 }
 
 function safeToolCall(call: unknown): call is OrbitToolCall {
@@ -174,10 +167,7 @@ export class RunManager {
       run = await this.store.load(runId)
       if (!run) throw new Error(`Run checkpoint is missing: ${runId}`)
       if (run.state === 'completed') {
-        const normalizedPlan = completePlan(run.plan)
-        const planChanged = JSON.stringify(normalizedPlan) !== JSON.stringify(run.plan)
-        if (planChanged) run.plan = normalizedPlan
-        if (run.lastError || run.unsafeResumeRequired || planChanged) {
+        if (run.lastError || run.unsafeResumeRequired) {
           run.lastError = null
           run.unsafeResumeRequired = false
           await this.store.save(run)
@@ -214,9 +204,18 @@ export class RunManager {
       await this.#recoverPendingTool(run, executor, options)
       const tools = agentTools({ mode: run.mode, generateImages: run.generateImages, generate3d: run.generate3d })
       const system = run.mode === 'byok' ? await this.#systemPrompt(run) : ''
-      let consecutiveNoTools = 0
+      let executionState = createAgentExecutionState()
       while (run.iteration < MAX_AGENT_ITERATIONS) {
         if (controller.signal.aborted) throw controller.signal.reason
+        const compacted = compactAgentMessagesIfNeeded(run.messages, {
+          profile: 'cli-local',
+          plan: run.plan,
+          summaryLabel: 'Public Orbit CLI context compacted before the next model call.',
+        })
+        if (compacted.compacted) {
+          await this.store.save(run)
+          await this.#event(run, 'context_compacted', { before: compacted.before, after: compacted.after })
+        }
         run.iteration += 1
         const requestKey = run.pendingModelCall?.requestKey || `model_${run.id}_${run.iteration}`
         run.pendingModelCall = { requestKey, iteration: run.iteration, startedAt: new Date().toISOString() }
@@ -250,7 +249,11 @@ export class RunManager {
         run.pendingModelCall = null
         run.contentFilterStreak = contentFiltered ? Number(run.contentFilterStreak || 0) + 1 : 0
         if (!assistant || typeof assistant !== 'object') throw new Error('Model response is invalid')
-        const calls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls.filter(safeToolCall) : []
+        const calls = Array.isArray(assistant.tool_calls)
+          ? assistant.tool_calls.filter(safeToolCall).slice(0, ORBIT_AGENT_EXECUTION_POLICY.maxToolCallsPerTurn)
+          : []
+        const toolBatch = transitionAgentExecutionState(executionState, { type: 'tool_batch', count: calls.length })
+        executionState = toolBatch.state
         run.messages.push({
           role: 'assistant',
           content: typeof assistant.content === 'string' ? assistant.content : '',
@@ -263,7 +266,6 @@ export class RunManager {
         await this.store.save(run)
         await this.#event(run, 'model_completed', { success: true, iteration: run.iteration })
         if (!calls.length) {
-          consecutiveNoTools += 1
           if (run.mode === 'orbit' && run.contentFilterStreak >= 3) {
             const failedModel = run.model
             if (failedModel && !run.failedModels?.includes(failedModel)) {
@@ -286,7 +288,7 @@ export class RunManager {
             await this.store.transition(run, 'paused')
             return run
           }
-          if (consecutiveNoTools >= 3) {
+          if (toolBatch.stopReason === 'no_tool_limit') {
             run.lastError = { code: 'AGENT_NO_TOOL_PROGRESS', message: 'The agent stopped making tool progress. The checkpoint is preserved and can be resumed.' }
             await this.store.transition(run, 'paused')
             return run
@@ -295,7 +297,6 @@ export class RunManager {
           await this.store.save(run)
           continue
         }
-        consecutiveNoTools = 0
         for (const call of calls) {
           const name = call.function.name
           run.pendingTool = { id: call.id, name, arguments: call.function.arguments, startedAt: new Date().toISOString() }
@@ -305,13 +306,26 @@ export class RunManager {
           await this.#event(run, 'tool_started', { toolName: name, iteration: run.iteration })
           try {
             const content = await executor.execute(call)
+            executionState = transitionAgentExecutionState(executionState, { type: 'tool_result', ok: true }).state
             run.messages.push({ role: 'tool', tool_call_id: call.id, content })
             run.pendingTool = null
             run.unsafeResumeRequired = false
             await this.store.save(run)
             await this.#event(run, 'tool_completed', { toolName: name, success: true, durationMs: Date.now() - started })
+            if (name === 'validate_project') {
+              const validationTransition = transitionAgentExecutionState(executionState, {
+                type: 'validation_result',
+                ok: run.lastValidation?.ok === true,
+                signature: run.lastValidation?.ok ? '' : JSON.stringify(run.lastValidation || {}).slice(0, 1_200),
+              })
+              executionState = validationTransition.state
+              if (validationTransition.stopReason === 'repeated_validation_failure_limit') {
+                run.lastError = { code: 'REPEATED_VALIDATION_FAILURE', message: 'The same validation failure repeated without progress. The checkpoint is preserved for inspection.' }
+                await this.store.transition(run, 'paused')
+                return run
+              }
+            }
             if (name === 'finish') {
-              run.plan = completePlan(run.plan)
               run.result = { workspace: run.workspace, validation: run.lastValidation }
               run.lastError = null
               if (run.mode === 'orbit' && run.cloudRunId) await api.settle(run.cloudRunId, 'complete').catch(() => undefined)
@@ -332,11 +346,25 @@ export class RunManager {
               return run
             }
             const message = publicError(error)
+            const toolTransition = transitionAgentExecutionState(executionState, {
+              type: 'tool_result',
+              ok: false,
+              key: `${name}:${message.slice(0, 500)}`,
+            })
+            executionState = toolTransition.state
             run.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify({ ok: false, error: message }) })
+            if (toolTransition.warning === 'repeated_tool_error') {
+              run.messages.push({ role: 'user', content: `The same ${name} error repeated ${executionState.repeatedToolErrors} times. Change strategy: inspect a precise source anchor, make a smaller edit, or switch to a narrower diagnostic.` })
+            }
             run.pendingTool = null
             run.unsafeResumeRequired = false
             await this.store.save(run)
             await this.#event(run, 'tool_failed', { toolName: name, success: false, durationMs: Date.now() - started, errorCode: asError(error).code || 'TOOL_FAILED' })
+            if (toolTransition.stopReason === 'repeated_tool_error_limit') {
+              run.lastError = { code: 'REPEATED_TOOL_ERROR', message: 'The same tool error repeated without a strategy change. The checkpoint is preserved for inspection.' }
+              await this.store.transition(run, 'paused')
+              return run
+            }
           }
         }
       }
@@ -472,6 +500,7 @@ export class RunManager {
     return [
       'You are the public Orbit CLI local coding agent. Work only through the declared tools.',
       'Create or edit the selected local workspace. Use update_agent_plan first, keep changes focused, validate, and call finish.',
+      ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
       'Only the generic public skill below is available locally. Specialized official game templates and private Orbit skills are not present; never claim otherwise.',
       run.generate3d ? '3D generation is enabled and may be used when it materially helps the requested game.' : '3D generation is disabled; use local procedural or existing assets.',
       run.generateImages

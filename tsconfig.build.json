@@ -9,8 +9,7 @@
   },
   "include": [
     "src/**/*.mts",
-    "src/**/*.ts",
-    "packages/**/*.mts"
+    "src/**/*.ts"
   ],
   "exclude": ["dist", "node_modules", "test"]
 }

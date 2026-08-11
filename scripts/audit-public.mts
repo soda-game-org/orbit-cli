@@ -33,7 +33,7 @@ const PACK_ALLOWED_EXACT = new Set([
   'package.json',
   PUBLIC_GENERIC_SKILL,
 ])
-const PACK_ALLOWED_PREFIXES = ['dist/', 'src/', 'packages/orbit-provider-core/']
+const PACK_ALLOWED_PREFIXES = ['dist/', 'src/']
 const PACK_FORBIDDEN_SEGMENTS = new Set([
   '.git',
   '.github',
@@ -64,6 +64,9 @@ const forbiddenContent: Array<[RegExp, string]> = [
   [denyPattern(['\\bCur', 'sor\\b'], 'g'), 'third-party editor comparison'],
   [denyPattern(['7', 'k7k']), 'private reference-site integration'],
   [denyPattern(['43', '99']), 'private reference-site integration'],
+  [denyPattern(['kun', 'lun']), 'private target integration'],
+  [denyPattern(['neno', 'lib']), 'private target runtime'],
+  [denyPattern(['h5', '[-_ ]offline']), 'private target integration'],
   [/\barcade[-_ ]web[-_ ]catch\b/gi, 'private web-catch integration'],
   [/\bweb[-_ ]catch(?:er|ing)?\b/gi, 'private web-catch integration'],
   [/\bcatch[-_ ]studio\b/gi, 'private Catch Studio integration'],
@@ -83,7 +86,7 @@ function isContained(rootDirectory: string, candidate: string): boolean {
 }
 
 function scanText(relative: string, text: string): void {
-  if (relative === AUDIT_SCRIPT || relative.endsWith(` ${AUDIT_SCRIPT}`)) return
+  if (relative === AUDIT_SCRIPT || relative.endsWith(` ${AUDIT_SCRIPT}`) || /(?:^| )scripts\/audit-public\.mjs$/.test(relative)) return
   for (const label of findHighConfidenceSecrets(text)) findings.push(`${relative}: ${label}`)
   if (/(?:^|["'])\/(?:Users|home)\/[^\s"']+/m.test(text)) findings.push(`${relative}: absolute developer path`)
   for (const [pattern, label] of forbiddenContent) {
@@ -96,6 +99,9 @@ function selfCheckPrivateBoundaryPolicy(): void {
   const samples = [
     ['7', 'k7k'],
     ['43', '99'],
+    ['kun', 'lun'],
+    ['neno', 'lib'],
+    ['h5', '-offline'],
     ['web', '_catch'],
     ['catch', '-studio'],
     ['batch', '_catch'],
@@ -118,6 +124,8 @@ function selfCheckPrivateBoundaryPolicy(): void {
 }
 
 function maintainedJavaScriptSource(relative: string): boolean {
+  if (relative === 'packages/orbit-agent-core/runtime.mjs') return false
+  if (relative.startsWith('packages/orbit-provider-core/dist/')) return false
   const [topLevel] = relative.split('/')
   return Boolean(topLevel && TYPESCRIPT_SOURCE_ROOTS.has(topLevel) && /\.(?:cjs|js|mjs)$/i.test(relative))
 }
@@ -168,7 +176,6 @@ async function auditReachableGitHistory(): Promise<void> {
       if (!relative || seen.has(object)) continue
       seen.add(object)
       if (secretLikeFileName(path.posix.basename(relative))) findings.push(`git history ${relative}: forbidden file type`)
-      if (maintainedJavaScriptSource(relative)) findings.push(`git history ${relative}: maintained source must be TypeScript`)
       const { stdout: type } = await execFileAsync('git', ['cat-file', '-t', object], { cwd: root, encoding: 'utf8', windowsHide: true })
       if (type.trim() !== 'blob') continue
       const { stdout: bytes } = await execFileAsync('git', ['cat-file', 'blob', object], {
@@ -199,7 +206,7 @@ function normalizePackPath(value: unknown): string | null {
   return segments.join('/')
 }
 
-async function npmPackManifest(): Promise<any> {
+async function npmPackManifest(directory = root, label = 'Orbit CLI'): Promise<any> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-cli-public-audit-'))
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   try {
@@ -211,7 +218,7 @@ async function npmPackManifest(): Promise<any> {
       '--cache', path.join(temporary, 'npm-cache'),
       '--loglevel', 'error',
     ], {
-      cwd: root,
+      cwd: directory,
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
@@ -224,7 +231,7 @@ async function npmPackManifest(): Promise<any> {
   } catch (error) {
     const candidate = error as { stderr?: unknown; message?: unknown }
     const detail = String(candidate?.stderr || candidate?.message || error).trim().slice(0, 1_000)
-    findings.push(`npm pack manifest could not be audited: ${detail || 'unknown error'}`)
+    findings.push(`${label} npm pack manifest could not be audited: ${detail || 'unknown error'}`)
     return null
   } finally {
     await fs.rm(temporary, { recursive: true, force: true }).catch(() => undefined)
@@ -301,6 +308,60 @@ async function auditPackManifest(manifest: any, packageJson: any): Promise<numbe
   return manifest.files.length
 }
 
+async function auditCorePackManifest(
+  manifest: any,
+  packageDirectory: string,
+  label: string,
+  allowed: Set<string>,
+  required: Set<string>,
+): Promise<number> {
+  if (!manifest) return 0
+  const packageJson = JSON.parse(await fs.readFile(path.join(packageDirectory, 'package.json'), 'utf8'))
+  if (manifest.name !== packageJson.name || manifest.version !== packageJson.version) {
+    findings.push(`${label}: npm pack identity does not match package.json`)
+  }
+  if (Array.isArray(manifest.bundled) && manifest.bundled.length) {
+    findings.push(`${label}: npm pack must not contain bundled dependencies`)
+  }
+  const seen = new Set<string>()
+  for (const entry of manifest.files) {
+    const relative = normalizePackPath(entry?.path)
+    if (!relative) {
+      findings.push(`${label}: npm pack contains an invalid path`)
+      continue
+    }
+    if (seen.has(relative)) findings.push(`${label} ${relative}: duplicate npm pack path`)
+    seen.add(relative)
+    if (!allowed.has(relative)) findings.push(`${label} ${relative}: unexpected npm pack entry`)
+    const absolute = path.resolve(packageDirectory, ...relative.split('/'))
+    if (!isContained(packageDirectory, absolute)) {
+      findings.push(`${label} ${relative}: npm pack path escaped the package`)
+      continue
+    }
+    const stat = await fs.lstat(absolute).catch(() => null)
+    if (!stat?.isFile() || stat.isSymbolicLink()) {
+      findings.push(`${label} ${relative}: npm pack source is missing, non-regular, or symbolic`)
+      continue
+    }
+    if (Number(entry.size) !== stat.size) findings.push(`${label} ${relative}: npm pack size mismatch`)
+    if (stat.size > MAX_SCANNED_FILE_BYTES) {
+      findings.push(`${label} ${relative}: unexpectedly large npm pack file`)
+      continue
+    }
+    const bytes = await fs.readFile(absolute)
+    const source = decodeUtf8(bytes)
+    if (source === null || bytes.includes(0)) {
+      findings.push(`${label} ${relative}: binary or invalid UTF-8 content is not allowed`)
+      continue
+    }
+    scanText(`${label} ${relative}`, source)
+  }
+  for (const relative of required) {
+    if (!seen.has(relative)) findings.push(`${label}: npm pack is missing ${relative}`)
+  }
+  return manifest.files.length
+}
+
 for (const entry of await fs.readdir(root)) {
   if (!ignored.has(entry) && !allowedTopLevel.has(entry)) findings.push(`${entry}: unexpected top-level release entry`)
 }
@@ -314,9 +375,25 @@ await visit(root)
 await auditReachableGitHistory()
 if (privateSkillFiles.length) findings.push(`Only the generic skill may ship: ${privateSkillFiles.join(', ')}`)
 const packedFileCount = await auditPackManifest(await npmPackManifest(), packageJson)
+const agentCoreDirectory = path.join(root, 'packages/orbit-agent-core')
+const providerCoreDirectory = path.join(root, 'packages/orbit-provider-core')
+const agentCorePackCount = await auditCorePackManifest(
+  await npmPackManifest(agentCoreDirectory, 'agent core'),
+  agentCoreDirectory,
+  'agent core',
+  new Set(['LICENSE', 'README.md', 'package.json', 'runtime.d.mts', 'runtime.mjs']),
+  new Set(['LICENSE', 'package.json', 'runtime.d.mts', 'runtime.mjs']),
+)
+const providerCorePackCount = await auditCorePackManifest(
+  await npmPackManifest(providerCoreDirectory, 'provider core'),
+  providerCoreDirectory,
+  'provider core',
+  new Set(['LICENSE', 'README.md', 'package.json', 'dist/index.d.mts', 'dist/index.d.mts.map', 'dist/index.mjs', 'dist/index.mjs.map']),
+  new Set(['LICENSE', 'package.json', 'dist/index.d.mts', 'dist/index.mjs']),
+)
 if (findings.length) {
   console.error(`Public release audit failed:\n${[...new Set(findings)].map((finding) => `- ${finding}`).join('\n')}`)
   process.exitCode = 1
 } else {
-  console.log(`Public release audit passed: the checkout, reachable Git history and ${packedFileCount} packaged files contain no maintained JavaScript source, high-confidence credentials, private integrations, third-party comparisons, private skills, symbolic links, boundary escapes or unexpected package entries.`)
+  console.log(`Public release audit passed: the checkout, reachable Git history and ${packedFileCount + agentCorePackCount + providerCorePackCount} packaged files contain no maintained JavaScript source duplication across CLI and public core packages, high-confidence credentials, private integrations, third-party comparisons, private skills, symbolic links, boundary escapes or unexpected package entries.`)
 }

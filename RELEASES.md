@@ -1,5 +1,13 @@
 # Release integrity
 
+## v0.1.14
+
+This release moves portable Agent policy and provider transport into audited,
+independently installable public packages. Orbit CLI consumes the shared
+execution budget, plan/finish gates, context compaction, and loop streak state
+machine while product integrations remain in host adapters. The default
+DeepSeek profile is DeepSeek V4 Pro.
+
 Orbit CLI release tags are public supply-chain identifiers. The repository was rebased at `v0.1.12` to establish a genuinely TypeScript-only maintained source history and retire earlier source refs that still reached obsolete JavaScript or private implementation material. Registry artifacts already published for earlier versions remain governed by the registry and are not reproduced or replaced by this repository.
 
 Starting with `v0.1.12`, every source tag must identify exactly one reviewed version and must not be moved, replaced, or reused.

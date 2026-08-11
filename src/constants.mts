@@ -1,4 +1,8 @@
-import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../packages/orbit-provider-core/index.mjs'
+import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '@soda_game/orbit-provider-core'
+import {
+  ORBIT_AGENT_EXECUTION_POLICY,
+  ORBIT_AGENT_MODEL_OUTPUT_LIMITS,
+} from '@soda_game/orbit-agent-core'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -28,9 +32,9 @@ export const MAX_REFERENCE_IMAGES = 8
 export const MAX_REFERENCE_IMAGE_BYTES = 5 * 1024 * 1024
 export const MAX_REFERENCE_IMAGE_BYTES_TOTAL = 16 * 1024 * 1024
 export const MAX_CLOUD_LOG_QUEUE = 2_000
-export const MAX_TOOL_OUTPUT_CHARS = 48_000
-export const MAX_AGENT_ITERATIONS = 96
-export const MODEL_OUTPUT_TOKENS = 16_000
+export const MAX_TOOL_OUTPUT_CHARS = ORBIT_AGENT_EXECUTION_POLICY.maxToolOutputChars
+export const MAX_AGENT_ITERATIONS = ORBIT_AGENT_EXECUTION_POLICY.maxIterations
+export const MODEL_OUTPUT_TOKENS = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent
 
 export { PROVIDERS, PROVIDER_IDS, CODING_PROVIDER_IDS }
 

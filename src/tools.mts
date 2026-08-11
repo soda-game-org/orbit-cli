@@ -2,6 +2,11 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { MAX_TOOL_OUTPUT_CHARS } from './constants.mjs'
+import {
+  agentPlanOpenBlockingTodosForFinish,
+  completePublishTodosForFinish,
+  normalizeAgentPlan,
+} from '@soda_game/orbit-agent-core'
 import { canonicalDirectory, isContained, sha256, sleep } from './util.mjs'
 import type { OrbitMode, OrbitRun } from './types.mjs'
 
@@ -281,9 +286,11 @@ export class ToolExecutor {
     try { args = JSON.parse(call?.function?.arguments || '{}') } catch { throw new Error(`Invalid JSON arguments for ${name}`) }
     const root = await canonicalDirectory(this.workspace)
     if (name === 'update_agent_plan') {
-      this.run.plan = args
+      const plan = normalizeAgentPlan(args, this.run.plan)
+      if (!plan) throw new Error('update_agent_plan requires at least one valid todo')
+      this.run.plan = plan
       await this.store.save(this.run)
-      return JSON.stringify({ ok: true, plan: args }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      return JSON.stringify({ ok: true, plan }).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'write_file') return JSON.stringify(await atomicWrite(root, args.path, args.content))
     if (name === 'read_file') {
@@ -356,6 +363,10 @@ export class ToolExecutor {
     }
     if (name === 'finish') {
       if (!this.run.lastValidation?.ok) throw new Error('finish requires a passing validate_project result')
+      const openTodos = agentPlanOpenBlockingTodosForFinish(this.run.plan)
+      if (openTodos.length) throw new Error(`finish requires completed implementation todos: ${openTodos.map((todo) => todo.title).join(', ')}`)
+      this.run.plan = completePublishTodosForFinish(this.run.plan) ?? null
+      await this.store.save(this.run)
       return JSON.stringify({ ok: true, finished: true, validation: this.run.lastValidation })
     }
     if (name === 'generate_image') {

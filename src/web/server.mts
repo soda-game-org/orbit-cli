@@ -9,7 +9,7 @@ import { providerCredentialAccount } from '../credentials.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../constants.mjs'
 import { withRecoveryView } from '../recovery-view.mjs'
 import type { OrbitRun } from '../types.mjs'
-import type { OrbitCodingProviderId } from '../../packages/orbit-provider-core/index.mjs'
+import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
 
 const HOST = '127.0.0.1'
 const MAX_BODY = 24 * 1024 * 1024

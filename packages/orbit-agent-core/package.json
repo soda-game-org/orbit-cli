@@ -1,0 +1,32 @@
+{
+  "name": "@soda_game/orbit-agent-core",
+  "version": "0.4.0",
+  "description": "Portable, platform-neutral agent state and execution policy shared by Orbit hosts",
+  "type": "module",
+  "license": "MIT",
+  "author": "SODA GAME",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soda-game-org/orbit-cli.git",
+    "directory": "packages/orbit-agent-core"
+  },
+  "exports": {
+    ".": {
+      "types": "./runtime.d.mts",
+      "import": "./runtime.mjs"
+    }
+  },
+  "files": [
+    "runtime.mjs",
+    "runtime.d.mts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepublishOnly": "npm --prefix ../.. run check"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

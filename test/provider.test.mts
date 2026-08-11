@@ -9,7 +9,7 @@ import {
   normalizeProviderUsage,
   parseProviderAssistant,
   validateReplicateDeliveryUrl,
-} from '../packages/orbit-provider-core/index.mjs'
+} from '@soda_game/orbit-provider-core'
 
 class MemoryCredentials {
   constructor(entries = {}) { this.entries = new Map(Object.entries(entries)) }
@@ -25,6 +25,7 @@ test('provider profiles keep regional services and credentials separate', () => 
   assert.equal(PROVIDERS['kimi-cn'].baseUrl, 'https://api.moonshot.cn/v1')
   assert.equal(PROVIDERS['kimi-global'].baseUrl, 'https://api.moonshot.ai/v1')
   assert.equal(PROVIDERS.openai.protocol, 'responses')
+  assert.equal(PROVIDERS.deepseek.defaultModel, 'deepseek-v4-pro')
   assert.notEqual(providerCredentialAccount('zhipu-cn'), providerCredentialAccount('zai'))
   assert.notEqual(providerCredentialAccount('kimi-cn'), providerCredentialAccount('kimi-global'))
 })

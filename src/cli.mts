@@ -9,7 +9,7 @@ import { providerCredentialAccount } from './credentials.mjs'
 import { withRecoveryView } from './recovery-view.mjs'
 import { boundedString, publicError } from './util.mjs'
 import type { OrbitRun } from './types.mjs'
-import type { OrbitProviderId } from '../packages/orbit-provider-core/index.mjs'
+import type { OrbitProviderId } from '@soda_game/orbit-provider-core'
 import { collectCreateArguments, runWelcomeMenu, welcomeActionArguments } from './welcome.mjs'
 import { runInteractiveSession } from './session.mjs'
 
