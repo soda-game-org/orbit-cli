@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import { renderSessionHeader, runInteractiveSession } from '../src/session.mjs'
 
@@ -52,7 +55,9 @@ test('session header leaves BYOK automatic model selection provider-owned', () =
   assert.doesNotMatch(header, /DeepSeek V4 Pro/)
 })
 
-test('interactive session keeps accepting follow-up requests and prints summaries instead of JSON', async () => {
+test('interactive session keeps accepting follow-up requests and prints summaries instead of JSON', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-session-'))
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }))
   const answers = ['/images on', 'Build a one-button runner', 'Make the obstacles faster', '/status', '/quit']
   const calls = []
   let config = { ...baseConfig }
@@ -61,7 +66,11 @@ test('interactive session keeps accepting follow-up requests and prints summarie
       get: async () => config,
       update: async (patch) => { config = { ...config, ...patch }; return config },
     },
-    store: { list: async () => [] },
+    store: {
+      list: async () => [],
+      listThreads: async () => [],
+      createThread: async () => ({ id: 'thread_11111111-1111-4111-8111-111111111111', title: 'New session', latestRunId: null }),
+    },
     auth: { status: async () => ({ authenticated: true }) },
     manager: {
       create: async (input) => {
@@ -80,7 +89,7 @@ test('interactive session keeps accepting follow-up requests and prints summarie
 
   assert.equal(await runInteractiveSession({
     app,
-    cwd: '/tmp/orbit-game',
+    cwd,
     home: '/tmp',
     stdout: output.stream,
     color: false,
@@ -94,6 +103,7 @@ test('interactive session keeps accepting follow-up requests and prints summarie
   assert.equal(calls[1].operation, 'edit')
   assert.equal(calls[0].generateImages, true)
   assert.equal(calls[1].generateImages, true)
+  assert.equal(calls[0].threadId, calls[1].threadId)
   const rendered = output.writes.join('')
   assert.match(rendered, /✓ Game ready/)
   assert.match(rendered, /Session status/)
@@ -102,13 +112,15 @@ test('interactive session keeps accepting follow-up requests and prints summarie
   assert.doesNotMatch(rendered, /"state":\s*"completed"/)
 })
 
-test('slash commands update persistent model settings and resume the latest checkpoint', async () => {
+test('slash commands update persistent model settings and resume the latest checkpoint', async (t) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-session-resume-'))
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }))
   const answers = ['/mode byok', '/provider deepseek', '/model deepseek-chat', '/runtime phaser', '/permissions shell on', '/resume', '/quit']
   let config = { ...baseConfig }
   const checkpoint = {
     id: 'run_11111111-1111-4111-8111-111111111111',
     state: 'paused',
-    workspace: '/tmp/orbit-game',
+    workspace: cwd,
     mode: 'byok',
   }
   const resumes = []
@@ -119,6 +131,8 @@ test('slash commands update persistent model settings and resume the latest chec
     },
     store: {
       list: async () => [checkpoint],
+      listThreads: async () => [{ id: 'thread_22222222-2222-4222-8222-222222222222', title: 'Existing session', latestRunId: checkpoint.id }],
+      linkForRun: async () => ({ threadId: 'thread_22222222-2222-4222-8222-222222222222' }),
     },
     auth: { status: async () => ({ authenticated: false }) },
     manager: {
@@ -132,7 +146,7 @@ test('slash commands update persistent model settings and resume the latest chec
 
   await runInteractiveSession({
     app,
-    cwd: '/tmp/orbit-game',
+    cwd,
     stdout: output.stream,
     color: false,
     ask: async () => answers.shift(),

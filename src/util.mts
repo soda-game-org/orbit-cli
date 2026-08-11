@@ -11,6 +11,13 @@ export interface AppDirectories {
 }
 
 export type JsonRecord = Record<string, any>
+export const ORBIT_UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+export const ORBIT_RUN_ID_PATTERN = `run_${ORBIT_UUID_PATTERN}`
+const ORBIT_RUN_ID = new RegExp(`^${ORBIT_RUN_ID_PATTERN}$`)
+
+export function isOrbitRunId(value: unknown): value is string {
+  return typeof value === 'string' && ORBIT_RUN_ID.test(value)
+}
 
 function errorCode(error: unknown): string | undefined {
   return error && typeof error === 'object' && 'code' in error
@@ -38,11 +45,50 @@ export async function ensurePrivateDirectory(directory: string): Promise<string>
 }
 
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  await ensurePrivateDirectory(path.dirname(file))
+  const directory = await ensurePrivateDirectory(path.dirname(file))
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
-  if (process.platform !== 'win32') await fs.chmod(temporary, 0o600)
-  await fs.rename(temporary, file)
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null
+  try {
+    handle = await fs.open(temporary, 'wx', 0o600)
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`)
+    await handle.sync()
+    await handle.close()
+    handle = null
+    if (process.platform !== 'win32') await fs.chmod(temporary, 0o600)
+    await fs.rename(temporary, file)
+    const directoryHandle = await fs.open(directory, 'r').catch(() => null)
+    if (directoryHandle) {
+      try { await directoryHandle.sync() } catch {} finally { await directoryHandle.close() }
+    }
+  } finally {
+    await handle?.close().catch(() => undefined)
+    await fs.unlink(temporary).catch(() => undefined)
+  }
+}
+
+export async function durableAtomicWriteFile(
+  file: string,
+  value: string | Uint8Array,
+  { mode = 0o644 }: { mode?: number } = {},
+): Promise<void> {
+  const directory = path.dirname(file)
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null
+  try {
+    handle = await fs.open(temporary, 'wx', mode)
+    await handle.writeFile(value)
+    await handle.sync()
+    await handle.close()
+    handle = null
+    await fs.rename(temporary, file)
+    const directoryHandle = await fs.open(directory, 'r').catch(() => null)
+    if (directoryHandle) {
+      try { await directoryHandle.sync() } catch {} finally { await directoryHandle.close() }
+    }
+  } finally {
+    await handle?.close().catch(() => undefined)
+    await fs.unlink(temporary).catch(() => undefined)
+  }
 }
 
 export async function readJson<T = unknown>(file: string, fallback?: T): Promise<T> {
@@ -144,6 +190,19 @@ export function redactDiagnostic(value: unknown): string {
 export function publicError(error: unknown): string {
   if (error instanceof Error) return redactDiagnostic(error.message)
   return redactDiagnostic(String(error))
+}
+
+export function redactWorkspacePath(value: unknown, workspace: string): string {
+  let text = String(value ?? '')
+  const root = path.resolve(String(workspace || ''))
+  if (!path.isAbsolute(root) || root === path.parse(root).root) return text
+  const variants = new Set([root, root.replaceAll('/', '\\'), root.replaceAll('\\', '/')])
+  for (const variant of [...variants].sort((left, right) => right.length - left.length)) {
+    if (!variant) continue
+    text = text.split(variant).join('[workspace]')
+    if (process.platform === 'win32') text = text.replace(new RegExp(variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[workspace]')
+  }
+  return text
 }
 
 export async function canonicalDirectory(directory: string, { create = false }: { create?: boolean } = {}): Promise<string> {

@@ -7,7 +7,7 @@ import {
   completePublishTodosForFinish,
   normalizeAgentPlan,
 } from '@soda_game/orbit-agent-core'
-import { canonicalDirectory, isContained, sha256, sleep } from './util.mjs'
+import { canonicalDirectory, durableAtomicWriteFile, isContained, redactWorkspacePath, sha256, sleep } from './util.mjs'
 import type { OrbitMode, OrbitRun } from './types.mjs'
 
 type Dynamic = Record<string, any>
@@ -34,7 +34,13 @@ const BASE_TOOLS = [
   tool('read_file', 'Read a workspace file by line range.', { type: 'object', additionalProperties: false, required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } }),
   tool('list_files', 'List workspace files.', { type: 'object', additionalProperties: false, properties: {} }),
   tool('grep_files', 'Search workspace text files.', { type: 'object', additionalProperties: false, required: ['pattern'], properties: { pattern: { type: 'string' }, case_sensitive: { type: 'boolean' } } }),
-  tool('read_reference_media', 'Read the already-produced private reference analysis.', { type: 'object', additionalProperties: false, properties: { focus: { type: 'string' }, image_path: { type: 'string' } } }),
+  tool('read_reference_media', 'Read structured observations for specific Turn media identities. Vision-capable providers already receive the original image as a Turn input.', {
+    type: 'object', additionalProperties: false,
+    properties: {
+      media_ids: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
+      image_path: { type: 'string', description: 'Deprecated legacy alias; accepted only when it exactly matches a reference attached to this Turn.' },
+    },
+  }),
   tool('shell', 'Run an explicitly enabled npm install/build or JavaScript syntax check. Project build scripts execute with the current operating-system user permissions.', { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' }, timeout_ms: { type: 'integer' } } }),
   tool('validate_project', 'Validate source contracts, build output, paths, and local preview readiness.', { type: 'object', additionalProperties: false, properties: {} }),
   tool('finish', 'Finish only after validation passes.', { type: 'object', additionalProperties: false, properties: {} }),
@@ -137,13 +143,25 @@ async function reusableGeneratedImage(run: OrbitRun, root: string, expectedRelat
   return null
 }
 
+export function providerAssetResult(output: Dynamic): Dynamic {
+  const safe: Dynamic = {}
+  if (typeof output?.relativePath === 'string') safe.relativePath = output.relativePath.slice(0, 512)
+  if (typeof output?.sha256 === 'string' && /^[a-f0-9]{64}$/.test(output.sha256)) safe.sha256 = output.sha256
+  if (Number.isSafeInteger(output?.bytes) && output.bytes >= 0) safe.bytes = output.bytes
+  if (typeof output?.contentType === 'string') safe.contentType = output.contentType.slice(0, 80)
+  for (const key of ['width', 'height']) if (Number.isSafeInteger(output?.[key]) && output[key] > 0) safe[key] = output[key]
+  if (typeof output?.model === 'string') safe.model = output.model.slice(0, 160)
+  if (typeof output?.degraded === 'boolean') safe.degraded = output.degraded
+  if (typeof output?.degradedFrom === 'string') safe.degradedFrom = output.degradedFrom.slice(0, 160)
+  if (typeof output?.costUsd === 'number' && Number.isFinite(output.costUsd) && output.costUsd >= 0) safe.costUsd = output.costUsd
+  return safe
+}
+
 async function atomicWrite(root: string, value: unknown, content: unknown): Promise<{ path: string; bytes: number; sha256: string }> {
   const resolved = await resolveForWrite(root, value)
   const bytes = Buffer.from(String(content), 'utf8')
   if (bytes.byteLength > 8 * 1024 * 1024) throw new Error('Tool file exceeds the 8 MiB write limit')
-  const temporary = `${resolved.absolute}.${process.pid}.${Date.now()}.tmp`
-  await fs.writeFile(temporary, bytes, { flag: 'wx', mode: 0o644 })
-  await fs.rename(temporary, resolved.absolute)
+  await durableAtomicWriteFile(resolved.absolute, bytes)
   return { path: resolved.relative, bytes: bytes.byteLength, sha256: sha256(bytes) }
 }
 
@@ -225,18 +243,15 @@ async function runCommand(root: string, command: unknown, timeoutMs?: number): P
   })
 }
 
-async function validateProject(root: string, allowShell: boolean): Promise<{ ok: boolean; index?: string; issues: string[] }> {
+async function validateProject(root: string): Promise<{ ok: boolean; index?: string; issues: string[] }> {
   const files = await listFiles(root)
   let index: string | null = null
   for (const candidate of ['dist/index.html', 'index.html']) {
     if (files.includes(candidate)) { index = candidate; break }
   }
-  if (!index && files.includes('package.json') && allowShell) {
-    const build = await runCommand(root, 'npm run build', 300_000)
-    if (build.exitCode !== 0) return { ok: false, issues: [`Build failed:\n${build.output.slice(0, 8_000)}`] }
-    if ((await listFiles(root)).includes('dist/index.html')) index = 'dist/index.html'
-  }
-  if (!index) return { ok: false, issues: ['No playable index.html or dist/index.html was found.'] }
+  if (!index) return { ok: false, issues: [files.includes('package.json')
+    ? 'No playable index.html or dist/index.html was found. Run an explicit allowed shell build first, then validate again.'
+    : 'No playable index.html or dist/index.html was found.'] }
   const html = await fs.readFile(path.join(root, index), 'utf8')
   const sourceParts = [html]
   let sourceBytes = Buffer.byteLength(html)
@@ -307,27 +322,84 @@ export class ToolExecutor {
       const oldText = String(args.old_string)
       const newText = String(args.new_string)
       if (!oldText) throw new Error('edit_file old_string cannot be empty')
+      this.run.fileOperations ||= {}
+      const existingOperation = this.run.fileOperations[call.id]
+      if (existingOperation) {
+        if (existingOperation.type !== 'edit_file' || existingOperation.path !== file.relative
+          || existingOperation.argumentsHash !== sha256(String(call.function.arguments || ''))) throw new Error('Saved edit operation does not match this tool call')
+        const currentHash = sha256(source)
+        if (currentHash === existingOperation.postSha256) return JSON.stringify({ ok: true, recovered: true, path: file.relative })
+        if (currentHash !== existingOperation.preSha256) throw new Error('edit_file destination changed after the durable operation intent')
+        const resumed = source.replace(oldText, newText)
+        if (sha256(resumed) !== existingOperation.postSha256) throw new Error('edit_file durable postimage no longer matches the tool arguments')
+        const result = await atomicWrite(root, file.relative, resumed)
+        existingOperation.status = 'applied'
+        await this.store.save(this.run)
+        return JSON.stringify({ ...result, recovered: true })
+      }
       const occurrences = source.split(oldText).length - 1
-      if (occurrences === 0 && source.includes(newText)) return JSON.stringify({ ok: true, recovered: true, path: file.relative })
       if (occurrences !== 1) throw new Error(`edit_file expected one match, found ${occurrences}`)
-      return JSON.stringify(await atomicWrite(root, file.relative, source.replace(oldText, newText)))
+      const next = source.replace(oldText, newText)
+      this.run.fileOperations[call.id] = {
+        type: 'edit_file', path: file.relative, argumentsHash: sha256(String(call.function.arguments || '')),
+        preSha256: sha256(source), postSha256: sha256(next), status: 'pending',
+      }
+      await this.store.save(this.run)
+      const result = await atomicWrite(root, file.relative, next)
+      this.run.fileOperations[call.id].status = 'applied'
+      await this.store.save(this.run)
+      return JSON.stringify(result)
     }
     if (name === 'apply_patch') {
       if (!Array.isArray(args.edits) || !args.edits.length) throw new Error('apply_patch requires edits')
       const working = new Map<string, string>()
+      this.run.fileOperations ||= {}
+      const argumentsHash = sha256(String(call.function.arguments || ''))
+      const existingOperation = this.run.fileOperations[call.id]
+      if (existingOperation && (existingOperation.type !== 'apply_patch' || existingOperation.argumentsHash !== argumentsHash)) {
+        throw new Error('Saved patch operation does not match this tool call')
+      }
+      if (existingOperation) {
+        for (const expected of existingOperation.files || []) {
+          const file = await resolveForRead(root, expected.path)
+          const source = await fs.readFile(file.absolute, 'utf8')
+          const currentHash = sha256(source)
+          if (currentHash === expected.postSha256) continue
+          if (currentHash !== expected.preSha256) throw new Error(`apply_patch destination changed after durable intent: ${file.relative}`)
+          working.set(file.relative, source)
+        }
+      } else {
+        for (const edit of args.edits) {
+          const file = await resolveForRead(root, edit.path)
+          const source = working.has(file.relative) ? working.get(file.relative)! : await fs.readFile(file.absolute, 'utf8')
+          working.set(file.relative, source)
+        }
+      }
       for (const edit of args.edits) {
         const file = await resolveForRead(root, edit.path)
-        const source = working.has(file.relative) ? working.get(file.relative)! : await fs.readFile(file.absolute, 'utf8')
+        if (!working.has(file.relative)) continue
+        const source = working.get(file.relative)!
         const oldText = String(edit.old_string)
         const newText = String(edit.new_string)
         if (!oldText) throw new Error('apply_patch old_string cannot be empty')
         const count = source.split(oldText).length - 1
-        if (count === 0 && source.includes(newText)) { working.set(file.relative, source); continue }
         if (count !== 1) throw new Error(`apply_patch expected one match in ${file.relative}, found ${count}`)
         working.set(file.relative, source.replace(oldText, newText))
       }
+      if (!existingOperation) {
+        const files = []
+        for (const [relative, content] of working) {
+          const file = await resolveForRead(root, relative)
+          const source = await fs.readFile(file.absolute, 'utf8')
+          files.push({ path: relative, preSha256: sha256(source), postSha256: sha256(content) })
+        }
+        this.run.fileOperations[call.id] = { type: 'apply_patch', argumentsHash, files, status: 'pending' }
+        await this.store.save(this.run)
+      }
       const results: Array<{ path: string; bytes: number; sha256: string }> = []
       for (const [file, content] of working) results.push(await atomicWrite(root, file, content))
+      this.run.fileOperations[call.id].status = 'applied'
+      await this.store.save(this.run)
       return JSON.stringify({ ok: true, files: results })
     }
     if (name === 'list_files') return ((await listFiles(root)).join('\n') || 'No files').slice(0, MAX_TOOL_OUTPUT_CHARS)
@@ -348,15 +420,56 @@ export class ToolExecutor {
       return (matches.join('\n') || 'No matches').slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'read_reference_media') {
-      if (!this.run.referenceSummary) throw new Error('No reference analysis is available')
-      return String(this.run.referenceSummary).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      const observations = Array.isArray(this.run.mediaObservations) ? this.run.mediaObservations : []
+      const inputItems = Array.isArray(this.run.inputItems) ? this.run.inputItems : []
+      const requested = Array.isArray(args.media_ids)
+        ? args.media_ids.map(String).filter(Boolean).slice(0, 8)
+        : []
+      if (typeof args.image_path === 'string' && args.image_path) {
+        const matches = (Array.isArray(this.run.references) ? this.run.references : []).filter((value) => (
+          [value?.privatePath, value?.originalName, value?.path].includes(args.image_path)
+        ))
+        if (matches.length !== 1 || !matches[0]?.id) throw new Error('Legacy image_path must uniquely match an attachment in this Turn')
+        requested.push(matches[0].id)
+      }
+      if (!requested.length) throw new Error('read_reference_media requires media_ids')
+      const items = requested.map((mediaId) => {
+        const inputItem = inputItems.find((item) => {
+          const attachmentId = item.type === 'attachment'
+            ? item.attachment.id
+            : item.type === 'image' || item.type === 'localImage'
+              ? item.attachmentId
+              : undefined
+          const itemMediaId = item.type === 'image' || item.type === 'localImage' ? item.mediaId : undefined
+          return item.id === mediaId || attachmentId === mediaId || itemMediaId === mediaId
+        })
+        const attachmentId = inputItem?.type === 'attachment'
+          ? inputItem.attachment.id
+          : inputItem?.type === 'image' || inputItem?.type === 'localImage'
+            ? inputItem.attachmentId || mediaId
+            : mediaId
+        const observation = observations.find((value) => value?.id === mediaId
+          || value?.attachmentId === attachmentId
+          || value?.mediaId === mediaId)
+        if (observation) return { sourceItemId: inputItem?.id || null, attachmentId, observation }
+        if ((this.run.mode === 'byok' || this.run.visionCapability?.vision === true) && inputItem && (inputItem.type === 'image' || inputItem.type === 'localImage'
+          || inputItem.type === 'attachment' && inputItem.attachment.kind === 'image')) {
+          return { sourceItemId: inputItem.id, attachmentId, status: 'direct_turn_input', note: 'The original image was projected directly as a Turn input.' }
+        }
+        if (this.run.referenceSummary && args.image_path) {
+          return { sourceItemId: inputItem?.id || null, attachmentId, status: 'legacy_aggregate', summary: String(this.run.referenceSummary) }
+        }
+        throw new Error(`No media observation is available for ${mediaId}`)
+      })
+      return JSON.stringify({ items }).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'shell') {
       if (!this.allowShell) throw new Error('Project code execution is disabled. Review the workspace, then restart with --allow-shell only if you accept local-user filesystem access.')
-      return JSON.stringify(await runCommand(root, args.command, args.timeout_ms)).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      const result = await runCommand(root, args.command, args.timeout_ms)
+      return JSON.stringify({ ...result, output: redactWorkspacePath(result.output, root) }).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'validate_project') {
-      const result = await validateProject(root, this.allowShell)
+      const result = await validateProject(root)
       this.run.lastValidation = result
       await this.store.save(this.run)
       return JSON.stringify(result).slice(0, MAX_TOOL_OUTPUT_CHARS)
@@ -383,7 +496,7 @@ export class ToolExecutor {
           reusedFromCallId: reusable.callId,
         }
         await this.store.save(this.run)
-        return JSON.stringify({ ...reusable.output, reused: true }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+        return JSON.stringify({ ...providerAssetResult(reusable.output), reused: true }).slice(0, MAX_TOOL_OUTPUT_CHARS)
       }
       this.run.assetImages[call.id].outputPath = outputPath
       await this.store.save(this.run)
@@ -401,7 +514,7 @@ export class ToolExecutor {
         requestKey: `image_${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120)}`,
         persist: async () => this.store.save(this.run),
       })
-      return JSON.stringify(result).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      return JSON.stringify(providerAssetResult(result)).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'generate_3d_model') {
       if (!this.run.generate3d) throw new Error('3D generation was not enabled for this run')
@@ -411,7 +524,7 @@ export class ToolExecutor {
         faceCount: args.face_count, enablePbr: args.enable_pbr, state: this.run.asset3d,
         signal: this.signal, persist: async () => this.store.save(this.run),
       })
-      return JSON.stringify(result)
+      return JSON.stringify(providerAssetResult(result))
     }
     if (name === 'generate_humanoid_character') {
       if (!this.run.generate3d || !this.run.cloudRunId) throw new Error('Official 3D generation is unavailable for this run')

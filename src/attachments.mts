@@ -6,7 +6,7 @@ import {
   MAX_REFERENCE_IMAGE_BYTES_TOTAL,
   MAX_REFERENCE_IMAGES,
 } from './constants.mjs'
-import { canonicalDirectory, isContained, sha256 } from './util.mjs'
+import { canonicalDirectory, id, isContained, sha256 } from './util.mjs'
 import type { OrbitReference } from './types.mjs'
 
 export interface ReferenceImageMetadata extends OrbitReference {
@@ -59,7 +59,11 @@ async function safeDirectory(root: string, relative: string): Promise<string> {
   for (const part of parts) {
     current = path.join(current, part)
     const before = await fs.lstat(current).catch((error) => isMissing(error) ? null : Promise.reject(error))
-    if (!before) await fs.mkdir(current, { mode: 0o700 })
+    if (!before) {
+      await fs.mkdir(current, { mode: 0o700 }).catch((error) => isMissing(error) || (error as NodeJS.ErrnoException).code === 'EEXIST'
+        ? undefined
+        : Promise.reject(error))
+    }
     const stat = await fs.lstat(current)
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe reference directory: ${part}`)
     const canonical = await fs.realpath(current)
@@ -189,6 +193,7 @@ export async function ingestReferenceImages(workspace: string, files: string[]):
   if (!Array.isArray(files)) throw new TypeError('Reference images must be an array')
   if (files.length > MAX_REFERENCE_IMAGES) throw new Error(`At most ${MAX_REFERENCE_IMAGES} reference images are allowed`)
   const root = await canonicalDirectory(workspace, { create: true })
+  if (!files.length) return []
   const destination = await safeDirectory(root, '.orbit/references')
   const results: ReferenceImageMetadata[] = []
   const createdAt = new Date().toISOString()
@@ -206,11 +211,23 @@ export async function ingestReferenceImages(workspace: string, files: string[]):
         throw new Error('Existing reference cache entry is unsafe')
       }
     } else {
-      const temporary = `${output}.${process.pid}.tmp`
+      const temporary = `${output}.${process.pid}.${id()}.tmp`
+      let handle: Awaited<ReturnType<typeof fs.open>> | null = null
       try {
-        await fs.writeFile(temporary, image.bytes, { flag: 'wx', mode: 0o600 })
-        await fs.rename(temporary, output)
+        handle = await fs.open(temporary, 'wx', 0o600)
+        await handle.writeFile(image.bytes)
+        await handle.sync()
+        await handle.close()
+        handle = null
+        await fs.link(temporary, output).catch((error) => (error as NodeJS.ErrnoException).code === 'EEXIST'
+          ? undefined
+          : Promise.reject(error))
+        const directoryHandle = await fs.open(destination, 'r').catch(() => null)
+        if (directoryHandle) {
+          try { await directoryHandle.sync() } catch {} finally { await directoryHandle.close() }
+        }
       } finally {
+        await handle?.close().catch(() => undefined)
         await fs.unlink(temporary).catch(() => undefined)
       }
     }
@@ -228,7 +245,7 @@ export async function ingestReferenceImages(workspace: string, files: string[]):
       bytes: image.bytes.byteLength,
       sha256: digest,
     }
-    if (existing) await readVerifiedReference(reference, root)
+    await readVerifiedReference(reference, root)
     results.push(reference)
   }
   return results

@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises'
+import { constants } from 'node:fs'
 import path from 'node:path'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { sniffImage } from '../attachments.mjs'
-import { appDirectories, canonicalDirectory, collectStream, ensurePrivateDirectory, isContained, openExternal, publicError, type AppDirectories } from '../util.mjs'
+import { appDirectories, canonicalDirectory, collectStream, ensurePrivateDirectory, isContained, openExternal, ORBIT_RUN_ID_PATTERN, publicError, sha256, type AppDirectories } from '../util.mjs'
 import { providerCredentialAccount } from '../credentials.mjs'
 import { CODING_PROVIDER_IDS, PROVIDER_IDS, PROVIDERS } from '../constants.mjs'
 import { ORBIT_MANAGED_DEFAULT_MODEL, managedOrbitModelFromCatalog } from '../model-display.mjs'
@@ -13,6 +14,7 @@ import type { OrbitRun } from '../types.mjs'
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
 
 const HOST = '127.0.0.1'
+const runRoute = (suffix: string) => new RegExp(`^/api/runs/(${ORBIT_RUN_ID_PATTERN})/${suffix}$`)
 const MAX_BODY = 24 * 1024 * 1024
 const STATIC = new Map<string, readonly [string, string]>([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -63,6 +65,7 @@ interface UploadBatch { directory: string; paths: string[] }
 
 async function writeUploads(files: unknown, directories: AppDirectories): Promise<UploadBatch> {
   if (!Array.isArray(files) || files.length > 8) throw new Error('At most 8 reference images are allowed')
+  if (!files.length) return { directory: '', paths: [] }
   const directory = await ensurePrivateDirectory(path.join(directories.data, 'web-uploads', randomBytes(12).toString('hex')))
   const paths: string[] = []
   try {
@@ -93,7 +96,25 @@ async function writeUploads(files: unknown, directories: AppDirectories): Promis
 async function cleanupUploads(upload: UploadBatch | null | undefined): Promise<void> {
   if (!upload) return
   for (const file of upload.paths) await fs.unlink(file).catch(() => undefined)
-  await fs.rm(upload.directory, { recursive: true, force: true }).catch(() => undefined)
+  if (upload.directory) await fs.rm(upload.directory, { recursive: true, force: true }).catch(() => undefined)
+}
+
+async function cleanupOrphanUploads(directories: AppDirectories, maximumAgeMs = 60 * 60_000): Promise<void> {
+  const root = path.join(directories.data, 'web-uploads')
+  const rootStat = await fs.lstat(root).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  })
+  if (!rootStat) return
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Web upload storage is unsafe')
+  const now = Date.now()
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!/^[0-9a-f]{24}$/.test(entry.name)) continue
+    const absolute = path.join(root, entry.name)
+    const stat = await fs.lstat(absolute).catch(() => null)
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || now - stat.mtimeMs < maximumAgeMs) continue
+    await fs.rm(absolute, { recursive: true, force: true })
+  }
 }
 
 function previewType(file: string): string {
@@ -101,15 +122,15 @@ function previewType(file: string): string {
   return types[path.extname(file).toLowerCase()] || 'application/octet-stream'
 }
 
-async function runDisplayMetadata(run: OrbitRun): Promise<OrbitRun & Record<string, any>> {
-  const workspace = String(run?.result?.workspace || run?.workspace || '')
+async function runDisplayMetadata(run: OrbitRun): Promise<Record<string, any>> {
+  const workspace = String(run?.workspace || '')
   const folderName = workspace ? path.basename(workspace) : ''
   let gameName = String(run?.result?.title || run?.lastValidation?.title || '').trim()
   const index = String(run?.lastValidation?.index || '')
   if (!gameName && workspace && (index === 'index.html' || index === 'dist/index.html')) {
     try {
       const root = await canonicalDirectory(workspace)
-      const html = await fs.readFile(path.join(root, index), 'utf8')
+      const html = (await safePreviewFile(root, `/${index}`, 64 * 1024)).bytes.toString('utf8')
       gameName = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1]
         ?.replace(/<[^>]*>/g, ' ')
         .replace(/\s+/g, ' ')
@@ -117,22 +138,106 @@ async function runDisplayMetadata(run: OrbitRun): Promise<OrbitRun & Record<stri
         .slice(0, 160) || ''
     } catch {}
   }
+  const recovery = withRecoveryView(run)
+  const result = run.result && typeof run.result === 'object'
+    ? {
+        summary: typeof run.result.summary === 'string' ? run.result.summary : undefined,
+        title: typeof run.result.title === 'string' ? run.result.title : undefined,
+        workspace: typeof run.result.workspace === 'string' ? run.result.workspace : undefined,
+        relativePath: typeof run.result.relativePath === 'string' ? run.result.relativePath : undefined,
+      }
+    : null
+  const validation = run.lastValidation && typeof run.lastValidation === 'object'
+    ? {
+        ok: run.lastValidation.ok === true,
+        index: typeof run.lastValidation.index === 'string' ? run.lastValidation.index : undefined,
+        title: typeof run.lastValidation.title === 'string' ? run.lastValidation.title : undefined,
+        issues: Array.isArray(run.lastValidation.issues)
+          ? run.lastValidation.issues.filter((issue: unknown) => typeof issue === 'string').slice(0, 100)
+          : [],
+      }
+    : null
+  const plan = run.plan && typeof run.plan === 'object'
+    ? {
+        summary: typeof run.plan.summary === 'string' ? run.plan.summary : undefined,
+        currentTodoId: typeof run.plan.currentTodoId === 'string' ? run.plan.currentTodoId : undefined,
+        todos: Array.isArray(run.plan.todos) ? run.plan.todos.slice(0, 100).map((todo: any) => ({
+          id: typeof todo?.id === 'string' ? todo.id : '',
+          title: typeof todo?.title === 'string' ? todo.title : '',
+          status: typeof todo?.status === 'string' ? todo.status : '',
+          kind: typeof todo?.kind === 'string' ? todo.kind : undefined,
+          detail: typeof todo?.detail === 'string' ? todo.detail : undefined,
+        })) : [],
+      }
+    : null
   return {
-    ...withRecoveryView(run),
+    id: run.id,
+    kind: typeof run.kind === 'string' ? run.kind : 'game',
+    source: run.source,
+    state: run.state,
+    operation: run.operation,
+    prompt: run.prompt,
+    workspace,
+    mode: run.mode,
+    provider: run.provider,
+    model: run.model,
+    runtime: run.runtime,
+    generateImages: run.generateImages === true,
+    generate3d: run.generate3d === true,
+    cloudLogs: run.cloudLogs === true,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    sequence: run.sequence,
+    iteration: run.iteration,
+    unsafeResumeRequired: run.unsafeResumeRequired === true,
+    lastError: run.lastError ? { code: String(run.lastError.code || ''), message: String(run.lastError.message || '') } : null,
+    result,
+    lastValidation: validation,
+    plan,
+    failureCategory: recovery.failureCategory,
+    recoveryDisposition: recovery.recoveryDisposition,
     gameName,
     folderName,
     displayName: gameName || folderName || run.id,
   }
 }
 
-async function safePreviewFile(root: string, pathname: string): Promise<{ absolute: string; stat: import('node:fs').Stats }> {
+function threadDisplayMetadata(thread: any): Record<string, any> {
+  return {
+    id: String(thread.id || ''),
+    projectId: String(thread.projectId || ''),
+    title: String(thread.title || 'Session'),
+    workspace: String(thread.workspace || ''),
+    runIds: Array.isArray(thread.runIds) ? thread.runIds.filter((id: unknown) => typeof id === 'string') : [],
+    latestRunId: typeof thread.latestRunId === 'string' ? thread.latestRunId : null,
+    turnCount: Array.isArray(thread.turns) ? thread.turns.length : Number(thread.turnCount || 0),
+    createdAt: String(thread.createdAt || ''),
+    updatedAt: String(thread.updatedAt || ''),
+    kind: thread.kind === 'assets' ? 'assets' : 'session',
+  }
+}
+
+async function safePreviewFile(root: string, pathname: string, maximumBytes = 64 * 1024 * 1024): Promise<{ absolute: string; bytes: Buffer }> {
   const relative = decodeURIComponent(pathname).replace(/^\/+/, '') || 'index.html'
   if (relative.split('/').some((part) => !part || part === '.' || part === '..') || relative.includes('\\')) throw new Error('Invalid preview path')
   const absolute = path.resolve(root, relative)
   if (!isContained(root, absolute)) throw new Error('Preview path escaped the project')
   const stat = await fs.lstat(absolute)
-  if (!stat.isFile() || stat.isSymbolicLink() || await fs.realpath(absolute) !== absolute || stat.size > 64 * 1024 * 1024) throw new Error('Unsafe preview file')
-  return { absolute, stat }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes) throw new Error('Unsafe preview file')
+  const handle = await fs.open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
+  try {
+    const opened = await handle.stat()
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size
+      || await fs.realpath(absolute) !== absolute) throw new Error('Unsafe preview file')
+    const bytes = await handle.readFile()
+    const after = await handle.stat()
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw new Error('Preview file changed while it was read')
+    return { absolute, bytes }
+  } finally {
+    await handle.close()
+  }
 }
 
 export class WebCliServer {
@@ -167,6 +272,7 @@ export class WebCliServer {
   }
 
   async start({ open = true }: { open?: boolean } = {}): Promise<{ url: string; origin: string; close: () => Promise<void> }> {
+    await cleanupOrphanUploads(this.directories)
     this.main = createServer((request, response) => this.#mainRequest(request, response).catch((error) => send(response, 500, { error: publicError(error) })))
     await new Promise<void>((resolve, reject) => { this.main!.once('error', reject); this.main!.listen({ host: HOST, port: 0, exclusive: true }, resolve) })
     this.mainHost = `${HOST}:${(this.main.address() as AddressInfo).port}`
@@ -244,7 +350,30 @@ export class WebCliServer {
         modelDiscovery: Boolean(definition.modelsPath),
         configured: Boolean(await this.credentials.get(providerCredentialAccount(id as keyof typeof PROVIDERS))),
       })))
-      const runs = await Promise.all((await this.store.list()).map(runDisplayMetadata))
+      const storedRuns = await this.store.list()
+      const threads = (await this.store.listThreads()).map(threadDisplayMetadata)
+      const assetGroups = new Map<string, OrbitRun[]>()
+      for (const run of storedRuns.filter((candidate: OrbitRun) => candidate.kind === 'asset3d' || candidate.kind === 'assetimage')) {
+        const group = assetGroups.get(run.workspace) || []
+        group.push(run)
+        assetGroups.set(run.workspace, group)
+      }
+      for (const [workspace, assets] of assetGroups) {
+        const ordered = [...assets].sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')) || left.id.localeCompare(right.id))
+        threads.push(threadDisplayMetadata({
+          id: `asset_${sha256(workspace).slice(0, 32)}`,
+          projectId: '',
+          title: 'Standalone assets',
+          workspace,
+          runIds: ordered.map((run) => run.id),
+          latestRunId: ordered.at(-1)?.id || null,
+          turns: ordered,
+          createdAt: ordered[0]?.createdAt || '',
+          updatedAt: ordered.at(-1)?.updatedAt || '',
+          kind: 'assets',
+        }))
+      }
+      const runs = await Promise.all(storedRuns.map(runDisplayMetadata))
       return send(response, 200, {
         config: await this.config.get(),
         auth,
@@ -253,9 +382,16 @@ export class WebCliServer {
           ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
           : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
         runs,
+        threads,
         providers,
         defaultWorkspace: path.join(process.cwd(), 'orbit-game'),
       })
+    }
+    if (request.method === 'POST' && url.pathname === '/api/threads') {
+      const body = await bodyJson(request)
+      const workspace = await canonicalDirectory(body.workspace, { create: true })
+      const thread = await this.store.createThread(workspace, String(body.title || 'New session'))
+      return send(response, 200, { thread: threadDisplayMetadata({ ...thread, workspace }) })
     }
     if (request.method === 'POST' && url.pathname === '/api/auth/login') return send(response, 200, await this.auth.login())
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') { await this.auth.logout(); return send(response, 200, { ok: true }) }
@@ -283,6 +419,12 @@ export class WebCliServer {
       const body = await bodyJson(request)
       await this.#assertGenerationAccess(body)
       const upload = await writeUploads(body.files || [], this.directories)
+      let uploadCleaned = false
+      const cleanupUploadOnce = async (): Promise<void> => {
+        if (uploadCleaned) return
+        uploadCleaned = true
+        await cleanupUploads(upload)
+      }
       response.writeHead(200, headers('application/x-ndjson; charset=utf-8', { 'X-Accel-Buffering': 'no' }))
       response.flushHeaders()
       const write = (message: unknown): void => {
@@ -293,14 +435,15 @@ export class WebCliServer {
           source: 'cli_gui', prompt: body.prompt, workspace: body.workspace, operation: body.operation,
           mode: body.mode, provider: body.provider, model: body.model, runtime: body.runtime,
           generateImages: body.generateImages === true, generate3d: body.generate3d === true, cloudLogs: body.cloudLogs === true,
-          allowShell: body.allowShell === true, referenceImages: upload.paths,
+          allowShell: body.allowShell === true, referenceImages: upload.paths, threadId: body.threadId,
+          onReferencesIngested: cleanupUploadOnce,
           onProgress: (event: unknown) => write({ type: 'progress', event }),
         })
-        write({ type: 'complete', run: withRecoveryView(run) })
+        write({ type: 'complete', run: await runDisplayMetadata(run) })
       } catch (error) {
         write({ type: 'error', error: publicError(error) })
       } finally {
-        await cleanupUploads(upload)
+        await cleanupUploadOnce()
         if (!response.destroyed && !response.writableEnded) response.end()
       }
       return
@@ -309,15 +452,22 @@ export class WebCliServer {
       const body = await bodyJson(request)
       await this.#assertGenerationAccess(body)
       const upload = await writeUploads(body.files || [], this.directories)
+      let uploadCleaned = false
+      const cleanupUploadOnce = async (): Promise<void> => {
+        if (uploadCleaned) return
+        uploadCleaned = true
+        await cleanupUploads(upload)
+      }
       try {
         const run = await this.manager.create({
           source: 'cli_gui', prompt: body.prompt, workspace: body.workspace, operation: body.operation,
           mode: body.mode, provider: body.provider, model: body.model, runtime: body.runtime,
           generateImages: body.generateImages === true, generate3d: body.generate3d === true, cloudLogs: body.cloudLogs === true,
-          allowShell: body.allowShell === true, referenceImages: upload.paths,
+          allowShell: body.allowShell === true, referenceImages: upload.paths, threadId: body.threadId,
+          onReferencesIngested: cleanupUploadOnce,
         })
-        return send(response, 200, { run: withRecoveryView(run) })
-      } finally { await cleanupUploads(upload) }
+        return send(response, 200, { run: await runDisplayMetadata(run) })
+      } finally { await cleanupUploadOnce() }
     }
     if (request.method === 'POST' && url.pathname === '/api/assets/image') {
       const body = await bodyJson(request)
@@ -325,7 +475,7 @@ export class WebCliServer {
         source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
         output: body.output, aspectRatio: body.aspectRatio, cloudLogs: body.cloudLogs === true,
       })
-      return send(response, 200, { run: withRecoveryView(run) })
+      return send(response, 200, { run: await runDisplayMetadata(run) })
     }
     if (request.method === 'POST' && url.pathname === '/api/assets/3d') {
       const body = await bodyJson(request)
@@ -333,9 +483,9 @@ export class WebCliServer {
         source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
         mode: body.mode, output: body.output, cloudLogs: body.cloudLogs === true,
       })
-      return send(response, 200, { run: withRecoveryView(run) })
+      return send(response, 200, { run: await runDisplayMetadata(run) })
     }
-    const resume = /^\/api\/runs\/(run_[0-9a-f-]{36})\/resume$/.exec(url.pathname)
+    const resume = runRoute('resume').exec(url.pathname)
     if (request.method === 'POST' && resume) {
       const body = await bodyJson(request)
       const runId = resume[1]!
@@ -345,15 +495,15 @@ export class WebCliServer {
         : stored.kind === 'assetimage'
           ? await this.assetImage.resume(runId, { retryUnsafe: body.retryUnsafe === true })
           : await this.manager.resume(runId, { allowShell: body.allowShell === true, retryUnsafe: body.retryUnsafe === true })
-      return send(response, 200, { run: withRecoveryView(run) })
+      return send(response, 200, { run: await runDisplayMetadata(run) })
     }
-    const relocate = /^\/api\/runs\/(run_[0-9a-f-]{36})\/relocate$/.exec(url.pathname)
+    const relocate = runRoute('relocate').exec(url.pathname)
     if (request.method === 'POST' && relocate) {
       const body = await bodyJson(request)
       const result = await this.store.relocateWorkspace(relocate[1]!, body.workspace)
       return send(response, 200, result)
     }
-    const preview = /^\/api\/runs\/(run_[0-9a-f-]{36})\/preview$/.exec(url.pathname)
+    const preview = runRoute('preview').exec(url.pathname)
     if (request.method === 'POST' && preview) {
       const run = await this.store.load(preview[1]!)
       if (run.kind === 'asset3d' || run.kind === 'assetimage') return send(response, 409, { error: 'Standalone asset runs do not have a game preview' })
@@ -372,7 +522,7 @@ export class WebCliServer {
       this.projects.set(key, root)
       return send(response, 200, { url: `${this.previewOrigin}/p/${key}/index.html` })
     }
-    const publish = /^\/api\/runs\/(run_[0-9a-f-]{36})\/publish$/.exec(url.pathname)
+    const publish = runRoute('publish').exec(url.pathname)
     if (request.method === 'POST' && publish) {
       const body = await bodyJson(request)
       if (body.confirmed !== true) return send(response, 409, { error: 'Explicit publish confirmation is required' })
@@ -392,8 +542,7 @@ export class WebCliServer {
     const root = match && this.projects.get(match[1]!)
     if (!root) return send(response, 404, 'Not found', 'text/plain; charset=utf-8')
     const file = await safePreviewFile(root, `/${match![2]!}`)
-    const bytes = await fs.readFile(file.absolute)
-    return send(response, 200, bytes, previewType(file.absolute), {
+    return send(response, 200, file.bytes, previewType(file.absolute), {
       'Content-Security-Policy': `default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'none'; worker-src 'self' blob:; frame-ancestors ${this.mainOrigin}; base-uri 'none'; form-action 'none'`,
       'Cross-Origin-Resource-Policy': 'same-site',
     })

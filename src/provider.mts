@@ -28,12 +28,33 @@ export class ByokProvider {
     this.fetchImpl = fetchImpl
   }
 
-  async capability(provider: OrbitCodingProviderId): Promise<Record<string, unknown>> {
+  async capability(provider: OrbitCodingProviderId, model?: string, { signal }: { signal?: AbortSignal | null } = {}): Promise<Record<string, unknown>> {
     const definition = codingProvider(provider)
+    const resolvedModel = String(model || definition.defaultModel).trim()
+    let vision = false
+    let visionKnown = false
+    let maxOutputTokens: number | undefined
+    if (definition.modelsPath) {
+      try {
+        const selected = (await this.models(provider, { signal })).find((candidate) => candidate.id === resolvedModel)
+        vision = selected?.vision === true
+        visionKnown = Boolean(selected)
+        const discoveredLimit = Number(selected?.maxOutputTokens)
+        if (Number.isSafeInteger(discoveredLimit) && discoveredLimit > 0) maxOutputTokens = discoveredLimit
+      } catch {
+        // Model-specific multimodal capability is a fail-closed boundary.
+      }
+    } else if (resolvedModel === definition.defaultModel) {
+      vision = definition.vision
+      visionKnown = true
+    }
     return {
       provider,
+      model: resolvedModel,
       configured: Boolean(await this.credentials.get(providerCredentialAccount(provider))),
-      vision: definition.vision,
+      vision,
+      visionKnown,
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
       defaultModel: definition.defaultModel,
       protocol: definition.protocol,
       modelDiscovery: Boolean(definition.modelsPath),

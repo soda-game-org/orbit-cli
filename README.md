@@ -88,6 +88,21 @@ Inside the session, type a request naturally or use the discoverable command pal
 
 Type `/help` for all session commands. Tab completes slash commands, arrow keys recall earlier input, requests typed while the agent is busy are queued for the next turn, `/resume` continues the latest resumable checkpoint, and Ctrl+C interrupts the active run without discarding the session. Scripted commands such as `orbit generate` keep their stable JSON output for automation.
 
+### Projects and sessions
+
+Orbit treats a local workspace as one **Project**. A Project can contain multiple independent **Sessions** (internally, Threads); every request is a **Turn**, and each execution or retry is a checkpointed **Run/Attempt**. Starting another Session keeps the same files but gives the agent a separate conversation history. Starting another Project selects a different workspace.
+
+Use these commands inside the terminal session:
+
+```text
+/sessions
+/session new Explore another gameplay direction
+/session <id-or-unique-prefix>
+/new ./another-game
+```
+
+In the local Web CLI, **New chat** creates another Session in the selected Project, while **New project** selects a separate workspace. The first Turn in a new Session for an existing game is still an edit of that Project; it does not recreate or replace the workspace. Legacy `runs/<id>/checkpoint.json` and `events.jsonl` remain in place and are indexed lazily, so upgrading does not move, delete, or rewrite old run history.
+
 ### Create your first game
 
 Sign in with your Orbit account:
@@ -165,6 +180,14 @@ orbit generate \
   --attach /absolute/path/character.png
 ```
 
+Each attachment occurrence is a separate Turn input with a stable identity,
+even when two occurrences share the same verified image bytes. A
+vision-capable selected model receives bounded image parts transiently in the
+provider request. Text-only models use a separate, identity-bound structured
+observation; Orbit does not concatenate every image into one startup summary.
+Image bytes and local paths are not stored in the conversation transcript, and
+private image context is never forwarded across provider boundaries.
+
 Let the game-development agent plan and generate image assets alongside the game code:
 
 ```sh
@@ -199,7 +222,7 @@ orbit runs
 orbit resume <run-id>
 ```
 
-In an interactive session, `/runs` shows recent checkpoints, `/resume [run-id]` continues one, and `/details [run-id]` expands its saved plan and tool timeline on demand. Completed work otherwise stays collapsed into the final summary.
+In an interactive session, `/sessions` lists conversation histories for the active Project, `/session <id>` switches between them, `/runs` shows recent checkpoints, `/resume [run-id]` continues one, and `/details [run-id]` expands its saved plan and tool timeline on demand. Completed work otherwise stays collapsed into the final summary.
 
 If the project folder moved, explicitly rebind every checkpoint for that workspace instead of editing local JSON by hand:
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { providerCredentialAccount } from './credentials.mjs'
-import { boundedString, canonicalDirectory, collectStream, id, isContained, sha256 } from './util.mjs'
+import { boundedString, canonicalDirectory, collectStream, durableAtomicWriteFile, id, isContained, sha256 } from './util.mjs'
 import { generateReplicateImage } from '@soda_game/orbit-provider-core'
 import type { CredentialStore } from './credentials.mjs'
 
@@ -59,9 +59,7 @@ async function writeImage(prepared: { root: string; relative: string; target: st
   const { root, relative, target } = prepared
   const parent = path.dirname(target)
   if (await fs.realpath(parent) !== parent || !isContained(root, parent)) throw new Error('Image output directory changed while generating')
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
-  await fs.writeFile(temporary, generated.bytes, { flag: 'wx', mode: 0o644 })
-  await fs.rename(temporary, target)
+  await durableAtomicWriteFile(target, generated.bytes)
   return {
     path: target,
     relativePath: relative,

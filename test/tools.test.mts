@@ -34,6 +34,25 @@ test('returns a non-empty protocol result for an empty workspace listing', async
   assert.equal(await executor.execute(call('list_files', {})), 'No files')
 })
 
+test('reads reference observations by canonical media identity and rejects arbitrary legacy paths', async (t) => {
+  const { run, executor } = await fixture(t)
+  run.inputItems = [{
+    schema: 'orbit.agent-input-item.v1', id: 'turn-item-1', type: 'attachment',
+    attachment: { id: 'attachment-1', kind: 'image', name: 'board.png', sourceRef: '.orbit/references/board.png' },
+  }]
+  run.references = [{ id: 'attachment-1', originalName: 'board.png', privatePath: '.orbit/references/board.png' }]
+  run.mediaObservations = [{
+    schema: 'orbit.agent-media-observation.v1', id: 'observation-1', attachmentId: 'attachment-1',
+    kind: 'image', status: 'ready', summary: 'A blue board.', facts: [{ id: 'fact-1', text: 'The board is blue.' }],
+  }]
+  const byId = JSON.parse(await executor.execute(call('read_reference_media', { media_ids: ['turn-item-1'] })))
+  assert.equal(byId.items[0].observation.id, 'observation-1')
+  const byLegacyAlias = JSON.parse(await executor.execute(call('read_reference_media', { image_path: 'board.png' })))
+  assert.equal(byLegacyAlias.items[0].attachmentId, 'attachment-1')
+  await assert.rejects(executor.execute(call('read_reference_media', { image_path: '../secret.png' })), /uniquely match an attachment/)
+  await assert.rejects(executor.execute(call('read_reference_media', {})), /requires media_ids/)
+})
+
 test('validates lifecycle implemented in local JavaScript, not only index HTML', async (t) => {
   const { workspace, executor } = await fixture(t)
   await fs.writeFile(path.join(workspace, 'index.html'), '<!doctype html><meta name="viewport" content="width=device-width"><script src="game.js"></script><button>Leaderboard</button>')

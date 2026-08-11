@@ -8,8 +8,9 @@ if (hash.get('token') && hash.get('csrf')) {
 history.replaceState(null, '', `${location.pathname}${location.search}`)
 
 const $ = (id: string): any => document.getElementById(id)
-let state: any = { runs: [], auth: { signedIn: false }, account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }, config: {}, providers: [], managedModel: {}, defaultWorkspace: '' }
+let state: any = { runs: [], threads: [], auth: { signedIn: false }, account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }, config: {}, providers: [], managedModel: {}, defaultWorkspace: '' }
 let selectedWorkspace = ''
+let selectedThreadId = ''
 let selectedRunId = ''
 let activePreviewRunId = ''
 let activePreviewUrl = ''
@@ -19,6 +20,7 @@ let configHydrated = false
 let running = false
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let progressNode: HTMLElement | null = null
+let navigationGeneration = 0
 const viewKeys = { providers: '', runs: '' }
 
 function errorMessage(error: unknown): string {
@@ -113,17 +115,36 @@ function latestRun(runs: any[]): any | null {
   return [...runs].sort((left, right) => String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || '')))[0] || null
 }
 
-function gameProjects(): Array<{ workspace: string; runs: any[]; latest: any }> {
+function threadRuns(thread: any): any[] {
+  const ids = new Set(Array.isArray(thread?.runIds) ? thread.runIds : [])
+  return (state.runs || []).filter((run: any) => ids.has(run.id))
+}
+
+function activeThread(): any | null {
+  return (state.threads || []).find((thread: any) => thread.id === selectedThreadId) || null
+}
+
+function workspaceHasGame(workspace: string): boolean {
+  return Boolean(workspace) && (state.threads || []).some((thread: any) => thread.workspace === workspace
+    && thread.kind !== 'assets'
+    && threadRuns(thread).some((run: any) => !['asset3d', 'assetimage'].includes(run.kind)))
+}
+
+function gameProjects(): Array<{ workspace: string; threads: any[]; latest: any }> {
   const byWorkspace = new Map<string, any[]>()
-  for (const run of state.runs || []) {
-    if (run.kind === 'asset3d' || run.kind === 'assetimage' || !run.workspace) continue
-    const runs = byWorkspace.get(run.workspace) || []
-    runs.push(run)
-    byWorkspace.set(run.workspace, runs)
+  for (const thread of state.threads || []) {
+    if (!thread.workspace) continue
+    const threads = byWorkspace.get(thread.workspace) || []
+    threads.push(thread)
+    byWorkspace.set(thread.workspace, threads)
   }
   return [...byWorkspace.entries()]
-    .map(([workspace, runs]) => ({ workspace, runs, latest: latestRun(runs) }))
-    .sort((left, right) => String(right.latest?.updatedAt || '').localeCompare(String(left.latest?.updatedAt || '')))
+    .map(([workspace, threads]) => ({
+      workspace,
+      threads: [...threads].sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))),
+      latest: latestRun(threads.flatMap(threadRuns)),
+    }))
+    .sort((left, right) => String(right.latest?.updatedAt || right.threads[0]?.updatedAt || '').localeCompare(String(left.latest?.updatedAt || left.threads[0]?.updatedAt || '')))
 }
 
 function shortRunId(value: unknown): string {
@@ -140,26 +161,34 @@ function renderProjects(): void {
     fragment.append(empty)
   }
   for (const project of projects) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = `workspace${project.workspace === selectedWorkspace ? ' active' : ''}`
-    const top = document.createElement('span')
-    top.className = 'workspace-top'
-    const title = document.createElement('strong')
-    title.textContent = project.latest.displayName || project.latest.folderName || project.latest.id
-    const projectState = document.createElement('span')
-    projectState.className = `project-state ${project.latest.state}`
-    projectState.textContent = project.latest.state
-    top.append(title, projectState)
-    const id = document.createElement('span')
-    id.className = 'project-id'
-    id.textContent = `ID ${shortRunId(project.latest.id)} · ${project.latest.folderName || project.latest.runtime || 'html'}`
-    const prompt = document.createElement('span')
-    prompt.className = 'project-prompt'
-    prompt.textContent = project.latest.prompt || project.workspace
-    button.append(top, id, prompt)
-    button.addEventListener('click', () => selectProject(project.workspace, project.latest.id))
-    fragment.append(button)
+    const heading = document.createElement('p')
+    heading.className = 'project-id'
+    heading.textContent = project.workspace
+    fragment.append(heading)
+    for (const thread of project.threads) {
+      const runs = threadRuns(thread)
+      const latest = latestRun(runs)
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = `workspace${thread.id === selectedThreadId ? ' active' : ''}`
+      const top = document.createElement('span')
+      top.className = 'workspace-top'
+      const title = document.createElement('strong')
+      title.textContent = thread.title || latest?.displayName || 'New session'
+      const projectState = document.createElement('span')
+      projectState.className = `project-state ${latest?.state || 'queued'}`
+      projectState.textContent = latest?.state || 'new'
+      top.append(title, projectState)
+      const id = document.createElement('span')
+      id.className = 'project-id'
+      id.textContent = `${thread.id.replace(/^thread_/, '').slice(0, 12)}${latest ? ` · ${shortRunId(latest.id)}` : ''}`
+      const prompt = document.createElement('span')
+      prompt.className = 'project-prompt'
+      prompt.textContent = latest?.prompt || 'Start a turn in this project'
+      button.append(top, id, prompt)
+      button.addEventListener('click', () => selectProject(project.workspace, latest?.id || '', thread.id))
+      fragment.append(button)
+    }
   }
   $('projects').replaceChildren(fragment)
 }
@@ -249,9 +278,7 @@ function renderTurn(run: any): HTMLElement {
 }
 
 function renderThread(): void {
-  const runs = selectedWorkspace
-    ? (state.runs || []).filter((run: any) => run.workspace === selectedWorkspace)
-    : []
+  const runs = activeThread() ? threadRuns(activeThread()) : []
   runs.sort((left: any, right: any) => String(left.createdAt || left.updatedAt || '').localeCompare(String(right.createdAt || right.updatedAt || '')))
   if (!runs.length) {
     const empty = document.createElement('div')
@@ -271,9 +298,10 @@ function renderThread(): void {
 }
 
 function renderSelection(): void {
-  const selectedRuns = selectedWorkspace ? (state.runs || []).filter((run: any) => run.workspace === selectedWorkspace) : []
+  const thread = activeThread()
+  const selectedRuns = thread ? threadRuns(thread) : []
   const selected = selectedRuns.find((run: any) => run.id === selectedRunId) || latestRun(selectedRuns)
-  $('thread-title').textContent = selected ? selected.displayName || selected.folderName || 'Local game' : 'New game'
+  $('thread-title').textContent = thread?.title || (selected ? selected.displayName || selected.folderName || 'Local game' : 'New game')
   $('thread-meta').textContent = selected
     ? `${selected.mode || 'orbit'} · ${runModelLabel(selected)} · ${selected.runtime || 'html'}`
     : accessLabel()
@@ -283,11 +311,12 @@ function renderSelection(): void {
 }
 
 function runView(): void {
-  const key = JSON.stringify({ runs: state.runs || [], selectedWorkspace, selectedRunId })
+  const key = JSON.stringify({ runs: state.runs || [], threads: state.threads || [], selectedWorkspace, selectedThreadId, selectedRunId })
   if (viewKeys.runs === key) return
   viewKeys.runs = key
-  if (selectedWorkspace && !(state.runs || []).some((run: any) => run.workspace === selectedWorkspace)) {
+  if (selectedThreadId && !(state.threads || []).some((thread: any) => thread.id === selectedThreadId)) {
     selectedWorkspace = ''
+    selectedThreadId = ''
     selectedRunId = ''
   }
   renderProjects()
@@ -307,7 +336,7 @@ function accessLabel(): string {
 
 function launchView(): void {
   if (!$('launch')) return
-  const editing = Boolean(selectedWorkspace)
+  const editing = workspaceHasGame($('workspace').value || selectedWorkspace)
   let label = editing ? 'Apply' : 'Generate'
   let needsAccess = false
   if ($('mode').value === 'orbit' && !state.auth.signedIn) {
@@ -323,18 +352,22 @@ function launchView(): void {
   if (!selectedWorkspace) $('thread-meta').textContent = accessLabel()
 }
 
-function selectProject(workspace: string, runId = ''): void {
+function selectProject(workspace: string, runId = '', threadId = ''): void {
+  const generation = ++navigationGeneration
   selectedWorkspace = workspace
+  selectedThreadId = threadId || (state.threads || []).find((thread: any) => thread.workspace === workspace && thread.runIds?.includes(runId))?.id || ''
   selectedRunId = runId
   $('workspace').value = workspace
   viewKeys.runs = ''
   runView()
-  const completed = latestRun((state.runs || []).filter((run: any) => run.workspace === workspace && run.state === 'completed' && !['asset3d', 'assetimage'].includes(run.kind)))
-  if (completed) preview(completed.id).catch((error) => status(errorMessage(error), true))
+  const completed = latestRun((activeThread() ? threadRuns(activeThread()) : []).filter((run: any) => run.state === 'completed' && !['asset3d', 'assetimage'].includes(run.kind)))
+  if (completed) preview(completed.id, generation).catch((error) => status(errorMessage(error), true))
 }
 
-function newGame(): void {
+function newProject(): void {
+  navigationGeneration += 1
   selectedWorkspace = ''
+  selectedThreadId = ''
   selectedRunId = ''
   $('workspace').value = state.defaultWorkspace || ''
   $('prompt').value = ''
@@ -348,6 +381,21 @@ function newGame(): void {
   $('preview-state').textContent = 'Select a completed project'
   viewKeys.runs = ''
   runView()
+  $('prompt').focus()
+}
+
+async function newChat(): Promise<void> {
+  if (!selectedWorkspace) return newProject()
+  const workspace = selectedWorkspace
+  const generation = navigationGeneration
+  const body = await api('/api/threads', {
+    method: 'POST',
+    body: JSON.stringify({ workspace, title: 'New session' }),
+  })
+  await refresh()
+  if (generation !== navigationGeneration || selectedWorkspace !== workspace) return
+  selectProject(workspace, '', body.thread.id)
+  $('prompt').value = ''
   $('prompt').focus()
 }
 
@@ -471,6 +519,10 @@ async function streamRun(payload: Record<string, unknown>): Promise<any> {
 async function submitRun(): Promise<void> {
   if (!await ensureRunAccess()) return
   const mode = $('mode').value
+  const requestWorkspace = $('workspace').value
+  const requestThreadId = activeThread()?.kind === 'assets' ? undefined : selectedThreadId || undefined
+  const requestGeneration = navigationGeneration
+  const requestOperation = workspaceHasGame(requestWorkspace) ? 'edit' : 'create'
   running = true
   launchView()
   updateProgress('Starting the local agent')
@@ -478,8 +530,8 @@ async function submitRun(): Promise<void> {
     await api('/api/config', { method: 'POST', body: JSON.stringify({ mode, provider: $('provider').value, model: $('model').value, runtime: $('runtime').value, cloudLogs: $('cloudLogs').checked }) })
     const run = await streamRun({
       prompt: $('prompt').value,
-      workspace: $('workspace').value,
-      operation: selectedWorkspace ? 'edit' : 'create',
+      workspace: requestWorkspace,
+      operation: requestOperation,
       mode,
       provider: $('provider').value,
       model: $('model').value,
@@ -488,16 +540,18 @@ async function submitRun(): Promise<void> {
       generate3d: $('generate3d').checked,
       cloudLogs: $('cloudLogs').checked,
       allowShell: $('allowShell').checked,
+      threadId: requestThreadId,
       files: await files(),
     })
-    selectedWorkspace = run.workspace || $('workspace').value
-    selectedRunId = run.id
     $('prompt').value = ''
     $('references').value = ''
     $('reference-list').textContent = 'No images'
     await refresh()
+    const runThread = (state.threads || []).find((thread: any) => thread.runIds?.includes(run.id))
+    if (requestGeneration === navigationGeneration) {
+      selectProject(runThread?.workspace || run.workspace || requestWorkspace, run.id, runThread?.id || requestThreadId || '')
+    }
     status(run.state === 'completed' ? 'Game ready' : `Run ${run.state}`)
-    if (run.state === 'completed') await preview(run.id)
   } finally {
     running = false
     progressNode?.remove()
@@ -507,14 +561,17 @@ async function submitRun(): Promise<void> {
 }
 
 async function resume(runId: string, retryUnsafe: boolean): Promise<void> {
+  const requestGeneration = navigationGeneration
   try {
     running = true
     launchView()
     updateProgress(`Resuming ${shortRunId(runId)}`)
     const body = await api(`/api/runs/${runId}/resume`, { method: 'POST', body: JSON.stringify({ retryUnsafe, allowShell: $('allowShell').checked }) })
-    selectedWorkspace = body.run.workspace || selectedWorkspace
-    selectedRunId = body.run.id
     await refresh()
+    const runThread = (state.threads || []).find((thread: any) => thread.runIds?.includes(body.run.id))
+    if (requestGeneration === navigationGeneration) {
+      selectProject(runThread?.workspace || body.run.workspace || selectedWorkspace, body.run.id, runThread?.id || '')
+    }
     status(`Run ${body.run.state}`)
   } catch (error) {
     status(errorMessage(error), true)
@@ -541,8 +598,9 @@ async function relocate(runId: string, currentWorkspace: string): Promise<void> 
   }
 }
 
-async function preview(runId: string): Promise<void> {
+async function preview(runId: string, expectedGeneration = navigationGeneration): Promise<void> {
   const body = await api(`/api/runs/${runId}/preview`, { method: 'POST', body: '{}' })
+  if (expectedGeneration !== navigationGeneration) return
   activePreviewRunId = runId
   activePreviewUrl = body.url
   if ($('preview').dataset.url !== body.url) {
@@ -553,7 +611,8 @@ async function preview(runId: string): Promise<void> {
   $('preview-state').textContent = `Run ${shortRunId(runId)}`
 }
 
-$('new-chat').addEventListener('click', newGame)
+$('new-chat').addEventListener('click', () => newChat().catch((error) => status(errorMessage(error), true)))
+$('new-project').addEventListener('click', newProject)
 $('references').addEventListener('change', () => {
   const names = Array.from<File>($('references').files || []).map((file) => file.name)
   $('reference-list').textContent = names.length ? names.join(' · ') : 'No images'
