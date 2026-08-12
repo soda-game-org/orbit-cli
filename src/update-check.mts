@@ -1,9 +1,12 @@
+import { spawn } from 'node:child_process'
 import { VERSION } from './constants.mjs'
 import { collectStream } from './util.mjs'
 
 const NPM_LATEST_URL = 'https://registry.npmjs.org/@soda_game%2Forbit-cli/latest'
 const MAX_RESPONSE_BYTES = 64 * 1024
 const DEFAULT_TIMEOUT_MS = 2_000
+const PACKAGE_SPEC = '@soda_game/orbit-cli@latest'
+const AUTO_UPDATE_MARKER = 'ORBIT_CLI_AUTO_UPDATED_TO'
 
 export interface OrbitCliUpdate {
   currentVersion: string
@@ -15,6 +18,29 @@ interface CheckForCliUpdateOptions {
   currentVersion?: string
   fetchImpl?: typeof fetch
   timeoutMs?: number
+}
+
+type RunCommand = (
+  command: string,
+  arguments_: string[],
+  options: { env?: NodeJS.ProcessEnv; stdio: 'inherit'; shell?: boolean },
+) => Promise<number>
+
+interface EnforceLatestCliOptions extends CheckForCliUpdateOptions {
+  argv?: string[]
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  execPath?: string
+  entrypoint?: string
+  stdout?: Pick<NodeJS.WriteStream, 'write'>
+  stderr?: Pick<NodeJS.WriteStream, 'write'>
+  runCommand?: RunCommand
+}
+
+export interface CliUpdateGateResult {
+  action: 'continue' | 'restarted' | 'blocked'
+  exitCode: number
+  update?: OrbitCliUpdate
 }
 
 /**
@@ -48,13 +74,86 @@ export async function checkForCliUpdate({
     return {
       currentVersion,
       latestVersion: metadata.version,
-      command: 'npm install -g @soda_game/orbit-cli@latest',
+      command: `npm install -g ${PACKAGE_SPEC}`,
     }
   } catch {
     return null
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * Require an installed CLI to match npm before it executes product commands.
+ * A successful update is followed by a fresh `orbit` process so the current
+ * invocation continues on the newly installed code.
+ */
+export async function enforceLatestCli({
+  argv = process.argv.slice(2),
+  env = process.env,
+  platform = process.platform,
+  execPath = process.execPath,
+  entrypoint = process.argv[1] || '',
+  stdout = process.stdout,
+  stderr = process.stderr,
+  runCommand = runInheritedCommand,
+  ...checkOptions
+}: EnforceLatestCliOptions = {}): Promise<CliUpdateGateResult> {
+  const update = await checkForCliUpdate(checkOptions)
+  if (!update) return { action: 'continue', exitCode: 0 }
+
+  const required = `Orbit CLI must update before continuing (v${update.currentVersion} → v${update.latestVersion}).`
+  if (env[AUTO_UPDATE_MARKER] === update.latestVersion) {
+    stderr.write(`${required}\nThe automatic update finished, but this command still resolved to the old installation.\nRun: ${update.command}\n`)
+    return { action: 'blocked', exitCode: 1, update }
+  }
+
+  stdout.write(`${required}\nUpdating automatically...\n`)
+  const installExitCode = await runCommand('npm', ['install', '--global', PACKAGE_SPEC], {
+    stdio: 'inherit',
+    // npm is exposed as npm.cmd on Windows. Only the fixed install command
+    // crosses cmd.exe; no user-provided value is included in this invocation.
+    shell: platform === 'win32',
+  })
+  if (installExitCode !== 0) {
+    stderr.write(`Orbit CLI could not update automatically.\nRun: ${update.command}\n`)
+    return { action: 'blocked', exitCode: installExitCode || 1, update }
+  }
+
+  stdout.write(`Updated to v${update.latestVersion}. Restarting Orbit CLI...\n`)
+  if (!entrypoint) {
+    stderr.write(`Orbit CLI was updated but could not restart automatically.\nRun: orbit ${argv.join(' ')}\n`)
+    return { action: 'blocked', exitCode: 1, update }
+  }
+  const restartExitCode = await runCommand(execPath, [entrypoint, ...argv], {
+    env: { ...env, [AUTO_UPDATE_MARKER]: update.latestVersion },
+    stdio: 'inherit',
+  })
+  return { action: 'restarted', exitCode: restartExitCode, update }
+}
+
+export function shouldSkipCliUpdate(argv: string[]): boolean {
+  return argv[0] === 'version'
+    || argv[0] === 'help'
+    || argv.includes('--version')
+    || argv.includes('--help')
+}
+
+function runInheritedCommand(
+  command: string,
+  arguments_: string[],
+  options: { env?: NodeJS.ProcessEnv; stdio: 'inherit'; shell?: boolean },
+): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(command, arguments_, {
+      env: options.env,
+      stdio: options.stdio,
+      windowsHide: true,
+      shell: options.shell ?? false,
+    })
+    child.once('error', () => resolve(1))
+    child.once('exit', (code, signal) => resolve(signal ? 1 : code ?? 1))
+  })
 }
 
 export function compareSemanticVersions(left: string, right: string): number {

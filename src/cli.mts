@@ -12,6 +12,7 @@ import type { OrbitRun } from './types.mjs'
 import type { OrbitProviderId } from '@soda_game/orbit-provider-core'
 import { collectCreateArguments, runWelcomeMenu, welcomeActionArguments } from './welcome.mjs'
 import { runInteractiveSession } from './session.mjs'
+import { enforceLatestCli, shouldSkipCliUpdate } from './update-check.mjs'
 
 type FlagValue = true | string | Array<true | string>
 type Flags = Record<string, FlagValue>
@@ -367,5 +368,13 @@ function isMainEntrypoint(): boolean {
 }
 
 if (isMainEntrypoint()) {
-  main().then((code) => { process.exitCode = code }).catch((error) => { console.error(`orbit: ${publicError(error)}`); process.exitCode = 1 })
+  const argv = process.argv.slice(2)
+  const start = async (): Promise<number> => {
+    if (!shouldSkipCliUpdate(argv)) {
+      const gate = await enforceLatestCli({ argv })
+      if (gate.action !== 'continue') return gate.exitCode
+    }
+    return main(argv)
+  }
+  start().then((code) => { process.exitCode = code }).catch((error) => { console.error(`orbit: ${publicError(error)}`); process.exitCode = 1 })
 }
