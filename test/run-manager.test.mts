@@ -76,7 +76,7 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
         tool('1', 'update_agent_plan', { summary: 'Build', todos: [{ id: 'build', title: 'Build game', status: 'in_progress', kind: 'code' }] }),
         tool('2', 'select_runtime', { runtime: 'html', dimension: '2d', rationale: 'A direct 2D canvas implementation is the lightest fit for this flat arcade interaction.' }),
         tool('3', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
-        tool('4', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); function finish(){ OrbitArcade.endGame({score:1}) }' }),
+        tool('4', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); function finish(){ OrbitArcade.endGame({score:1}) } function showLeaderboard(){ OrbitArcade.openLeaderboard() } document.addEventListener("pointerdown",()=>{}); document.addEventListener("keydown",()=>{});' }),
         tool('5', 'validate_project', {}),
         tool('6', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build game', status: 'completed', kind: 'code' }] }),
         tool('7', 'finish', {}),
@@ -208,7 +208,7 @@ test('same-provider Thread continuation rehydrates prior private images without 
         if (calls === 1) return { role: 'assistant', content: '', tool_calls: [
           tool('plan-image', 'update_agent_plan', { summary: 'Build', todos: [{ id: 'build', title: 'Build', status: 'in_progress', kind: 'code' }] }),
           tool('html-image', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
-          tool('js-image', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); OrbitArcade.endGame({score:1})' }),
+          tool('js-image', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); OrbitArcade.endGame({score:1}); OrbitArcade.openLeaderboard(); document.addEventListener("pointerdown",()=>{}); document.addEventListener("keydown",()=>{});' }),
           tool('validate-image', 'validate_project', {}),
           tool('done-image', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build', status: 'completed', kind: 'code' }] }),
           tool('finish-image', 'finish', {}),
@@ -608,7 +608,7 @@ test('finish closes later sibling calls with synthetic results before completing
   const manager = localManager(store, async () => ({ role: 'assistant', content: '', tool_calls: [
     tool('plan', 'update_agent_plan', { summary: 'Build', todos: [{ id: 'build', title: 'Build', status: 'in_progress', kind: 'code' }] }),
     tool('html', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
-    tool('js', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); OrbitArcade.endGame({score:1})' }),
+    tool('js', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); OrbitArcade.endGame({score:1}); OrbitArcade.openLeaderboard(); document.addEventListener("pointerdown",()=>{}); document.addEventListener("keydown",()=>{});' }),
     tool('validate', 'validate_project', {}),
     tool('done-plan', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build', status: 'completed', kind: 'code' }] }),
     tool('finish', 'finish', {}),

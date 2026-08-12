@@ -4,7 +4,8 @@ import path from 'node:path'
 import { createGzip } from 'node:zlib'
 import { Readable } from 'node:stream'
 import { scanSecretBytes, secretLikeFileName } from './secret-scan.mjs'
-import { canonicalDirectory, isContained, writeJsonAtomic } from './util.mjs'
+import { canonicalDirectory, isContained, sha256, writeJsonAtomic } from './util.mjs'
+import { LOCAL_STORE_MEDIA_PATHS } from './store-media.mjs'
 
 interface PublishFile {
   path: string
@@ -23,6 +24,7 @@ interface PublishInput extends Record<string, any> {
 
 interface PublishApi {
   publish(form: FormData): Promise<Record<string, any>>
+  publishSkill?(): Promise<Record<string, any>>
 }
 
 const SOURCE_EXCLUDED_DIRECTORIES = new Set(['.git', '.orbit', 'node_modules', 'dist', 'coverage'])
@@ -130,6 +132,23 @@ export class PublishService {
 
   constructor(api: PublishApi) { this.api = api }
 
+  async #assertPublishSkill(): Promise<void> {
+    if (typeof this.api.publishSkill !== 'function') return
+    const response = await this.api.publishSkill()
+    const contract = response?.contract
+    const digest = String(response?.sha256 || '')
+    if (response?.schema !== 'orbit.publish-skill.v1' || response?.version !== 1
+      || !contract || typeof contract !== 'object' || !/^[a-f0-9]{64}$/.test(digest)
+      || sha256(Buffer.from(JSON.stringify(contract))) !== digest) {
+      throw new Error('Orbit publish skill failed integrity validation')
+    }
+    if (contract.endpoint !== '/api/games/publish-pro-import'
+      || contract.explicitConfirmation !== true
+      || contract.storeMedia?.optional !== true) {
+      throw new Error('Orbit publish skill is incompatible with this CLI')
+    }
+  }
+
   async prepare(input: PublishInput): Promise<{ root: string; dist: PublishFile[]; archive: Buffer; title: string; prompt: string; runtime: string; gameId: string | null }> {
     const root = await canonicalDirectory(input.workspace)
     const dist = await collect(root, 'dist', { source: false })
@@ -148,6 +167,7 @@ export class PublishService {
   }
 
   async publish(input: PublishInput): Promise<Record<string, any>> {
+    await this.#assertPublishSkill()
     const prepared = await this.prepare(input)
     const form = new FormData()
     form.set('meta', JSON.stringify({
@@ -162,6 +182,22 @@ export class PublishService {
     form.set('source', new Blob([Uint8Array.from(prepared.archive)], { type: 'application/gzip' }), 'source.tar.gz')
     for (const file of prepared.dist) {
       form.set(`dist__${file.path.replaceAll('/', '__')}`, new Blob([Uint8Array.from(file.bytes)], { type: contentType(file.path) }), path.basename(file.path))
+    }
+    for (const [fieldName, relativePath] of [
+      ['listing_cover', LOCAL_STORE_MEDIA_PATHS.listingCover],
+      ['app_icon', LOCAL_STORE_MEDIA_PATHS.appIcon],
+    ] as const) {
+      const absolute = path.join(prepared.root, relativePath)
+      const stat = await fs.lstat(absolute).catch(() => null)
+      if (!stat) continue
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 16 || stat.size > 25 * 1024 * 1024) {
+        throw new Error(`Unsafe local store-media artifact: ${relativePath}`)
+      }
+      const bytes = await readStable(prepared.root, absolute, stat)
+      if (!bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
+        throw new Error(`Local store-media artifact is not PNG: ${relativePath}`)
+      }
+      form.set(fieldName, new Blob([Uint8Array.from(bytes)], { type: 'image/png' }), path.basename(relativePath))
     }
     const response = await this.api.publish(form)
     const gameId = response?.game?.id

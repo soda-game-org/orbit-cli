@@ -138,8 +138,8 @@ export class OrbitApi {
   }
 
   async generateImage(cloudRunId: string, input: { aspectRatio: string; requestKey: string; prompt: string; signal?: AbortSignal | null }): Promise<Record<string, any>> {
-    const aspectRatio = ['1:1', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : null
-    if (!aspectRatio) throw new TypeError('Image aspect ratio must be 1:1, 9:16, or 16:9')
+    const aspectRatio = ['1:1', '3:4', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : null
+    if (!aspectRatio) throw new TypeError('Image aspect ratio must be 1:1, 3:4, 9:16, or 16:9')
     const response = await this.request(`/api/engine/runs/${encodeURIComponent(cloudRunId)}/artboard/images`, {
       method: 'POST',
       signal: input.signal,
@@ -163,7 +163,7 @@ export class OrbitApi {
     const model = response.headers.get('x-orbit-image-model')
     const degradedFrom = response.headers.get('x-orbit-image-degraded-from')
     const expectedHash = response.headers.get('x-orbit-content-sha256')?.toLowerCase()
-    const expectedDimensions = aspectRatio === '1:1' ? [1024, 1024] : aspectRatio === '9:16' ? [576, 1024] : [1024, 576]
+    const expectedDimensions = aspectRatio === '1:1' ? [1024, 1024] : aspectRatio === '3:4' ? [768, 1024] : aspectRatio === '9:16' ? [576, 1024] : [1024, 576]
     if (response.headers.get('x-orbit-contract-version') !== '1'
       || response.headers.get('x-orbit-request-key') !== input.requestKey
       || !model || !OFFICIAL_IMAGE_MODELS.has(model)
@@ -231,6 +231,10 @@ export class OrbitApi {
 
   publish(form: FormData): Promise<any> {
     return this.request('/api/games/publish-pro-import', { method: 'POST', body: form }, { timeoutMs: 5 * 60_000 })
+  }
+
+  publishSkill(): Promise<any> {
+    return this.request('/api/engine/publish-skill', { method: 'GET' })
   }
 
   uploadLogs(body: Record<string, unknown>): Promise<any> {

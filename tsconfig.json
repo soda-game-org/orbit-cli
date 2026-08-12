@@ -4,7 +4,8 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node"],
+    "types": ["node", "react", "react-dom"],
+    "jsx": "react-jsx",
     "strict": true,
     "isolatedModules": true,
     "noUncheckedIndexedAccess": true,
@@ -21,6 +22,7 @@
   "include": [
     "src/**/*.mts",
     "src/**/*.ts",
+    "src/**/*.tsx",
     "scripts/**/*.mts",
     "packages/**/*.mts"
   ],

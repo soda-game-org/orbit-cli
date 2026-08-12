@@ -56,15 +56,26 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@soda_game/orbit-agent-core": "0.5.1",
-    "@soda_game/orbit-provider-core": "0.3.1",
     "@napi-rs/keyring": "^1.3.0",
+    "@soda_game/orbit-agent-core": "0.5.2",
+    "@soda_game/orbit-provider-core": "0.3.2",
     "@supabase/supabase-js": "^2.105.0"
   },
   "devDependencies": {
+    "@heroui/react": "^3.2.4",
+    "@heroui/styles": "^3.2.4",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.15.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
     "esbuild": "^0.28.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
   }
 }

@@ -519,7 +519,7 @@ export interface OrbitAgentConversationTransition {
   recoveredSteers?: OrbitAgentConversationInput[]
 }
 
-export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.1'
+export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.2'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION: typeof ORBIT_AGENT_CORE_VERSION
 export const ORBIT_AGENT_EXECUTION_POLICY: Readonly<OrbitAgentExecutionPolicy>
@@ -535,6 +535,22 @@ export const ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA: 'orbit.agent-tool-capability.v1
 export const ORBIT_AGENT_TOOL_CAPABILITY: unique symbol
 export const ORBIT_AGENT_RENDER_SURFACE_CONTRACT: string
 export const ORBIT_AGENT_RENDER_SURFACE_POLICY: Readonly<OrbitAgentRenderSurfacePolicy>
+export const ORBIT_ARCADE_SDK_CONTRACT_SCHEMA: 'orbit.arcade-sdk-contract.v1'
+export const ORBIT_ARCADE_SDK_CONTRACT: Readonly<{
+  schema: typeof ORBIT_ARCADE_SDK_CONTRACT_SCHEMA
+  lifecycle: Readonly<{
+    start: Readonly<{ method: 'OrbitArcade.startGame'; event: 'orbit:game:start' }>
+    end: Readonly<{ method: 'OrbitArcade.endGame'; event: 'orbit:game:end' }>
+  }>
+  required: readonly string[]
+  optional: readonly string[]
+  forbiddenDirectCapabilities: readonly string[]
+}>
+export const ORBIT_AGENT_STORE_MEDIA_SCHEMA: 'orbit.agent-store-media.v1'
+export const ORBIT_AGENT_STORE_MEDIA_ROLES: Readonly<{
+  listingCover: Readonly<{ role: 'listing_cover'; aspectRatio: '3:4'; preferredWidth: 768; preferredHeight: 1024; requiredForPlayable: false }>
+  appIcon: Readonly<{ role: 'app_icon'; aspectRatio: '1:1'; preferredWidth: 512; preferredHeight: 512; requiredForPlayable: false }>
+}>
 export const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA: 'orbit.agent-capability-profile.v1'
 export const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA: 'orbit.agent-semantic-summary.v1'
 export const ORBIT_AGENT_CHECKPOINT_SCHEMA: 'orbit.agent-checkpoint.v1'
@@ -550,6 +566,29 @@ export function normalizeAgentInputItem(
   raw: unknown,
   options?: { fallbackId?: string; index?: number },
 ): OrbitAgentInputItem | null
+export function orbitArcadeSdkContractText(options?: { detail?: 'minimal' | 'compact' }): string
+export function orbitArcadeSdkSourceIssues(source: unknown): string[]
+export interface OrbitAgentStoreMediaAsset {
+  role: 'listing_cover' | 'app_icon'
+  state: 'provided' | 'generated' | 'fallback' | 'skipped' | 'missing' | 'failed'
+  requiredForPlayable: false
+  location?: string
+  mediaType?: string
+  reason?: string
+  digest?: string
+  width?: number
+  height?: number
+}
+export interface OrbitAgentStoreMediaManifest {
+  schema: 'orbit.agent-store-media.v1'
+  projectId: string
+  updatedAt?: string
+  assets: Readonly<{ listing_cover: OrbitAgentStoreMediaAsset; app_icon: OrbitAgentStoreMediaAsset }>
+}
+export function normalizeAgentStoreMediaManifest(
+  raw: unknown,
+  options?: { projectId?: string; updatedAt?: string },
+): OrbitAgentStoreMediaManifest
 export function normalizeAgentInputItems(
   raw: unknown,
   options?: { fallbackId?: string },

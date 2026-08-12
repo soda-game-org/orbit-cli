@@ -44,7 +44,7 @@ const PACK_FORBIDDEN_SEGMENTS = new Set([
   'test',
   'tests',
 ])
-const PACK_ALLOWED_EXTENSIONS = new Set(['.css', '.html', '.js', '.json', '.map', '.md', '.mjs', '.mts', '.ts'])
+const PACK_ALLOWED_EXTENSIONS = new Set(['.css', '.html', '.js', '.json', '.map', '.md', '.mjs', '.mts', '.ts', '.tsx'])
 const PACK_ALLOWED_EXTENSIONLESS = new Set(['LICENSE'])
 const MAX_SCANNED_FILE_BYTES = 12 * 1024 * 1024
 const TYPESCRIPT_SOURCE_ROOTS = new Set(['packages', 'scripts', 'src', 'test'])
@@ -90,6 +90,11 @@ function scanText(relative: string, text: string): void {
   for (const label of findHighConfidenceSecrets(text)) findings.push(`${relative}: ${label}`)
   if (/(?:^|["'])\/(?:Users|home)\/[^\s"']+/m.test(text)) findings.push(`${relative}: absolute developer path`)
   for (const [pattern, label] of forbiddenContent) {
+    // React Aria/HeroUI's generated browser bundle contains internal `Cursor`
+    // symbols. The authored TSX source is packaged and scanned separately, so
+    // competitor references in product copy remain covered without treating a
+    // vendor implementation identifier as public comparison copy.
+    if (relative === 'dist/src/web/app.js' && label === 'third-party editor comparison') continue
     pattern.lastIndex = 0
     if (pattern.test(text)) findings.push(`${relative}: ${label}`)
   }

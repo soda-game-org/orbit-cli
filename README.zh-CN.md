@@ -223,6 +223,12 @@ orbit resume <run-id>
 orbit publish <run-id>
 ```
 
+上传前，CLI 会读取 Orbit 服务端公开、版本化的发布合约，并校验其 SHA-256。
+完成的任务还会在 `.orbit/artifacts/store/` 记录可选的本地商店素材：3:4 封面和
+方形图标。开启图片能力时，host 会在游戏验证通过后尝试生成；失败不会把可玩的
+游戏改成失败。`orbit publish` 会上传已经存在且校验通过的本地素材，由 Orbit
+服务写入 R2。素材缺失（包括纯文本 BYOK）时，服务端仍按原有逻辑异步补全。
+
 发布始终需要明确执行，并要求登录 Orbit 账号。
 
 ## 文档

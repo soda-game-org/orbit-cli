@@ -30,8 +30,11 @@ function isMissing(error: unknown): boolean {
 async function prepareTarget(workspace: string, output?: string): Promise<{ root: string; relative: string; target: string }> {
   const root = await canonicalDirectory(workspace)
   const relative = String(output || 'assets/images/generated.png').replaceAll('\\', '/')
+  const storeMediaArtifact = relative === '.orbit/artifacts/store/listing-cover.png'
+    || relative === '.orbit/artifacts/store/app-icon.png'
   if (!relative || relative.startsWith('/') || /^[A-Za-z]:/.test(relative)
     || relative.split('/').some((part) => !part || part === '.' || part === '..')
+    || (relative.startsWith('.orbit/') && !storeMediaArtifact)
     || path.posix.extname(relative).toLowerCase() !== '.png') {
     throw new Error('Image output must be a safe workspace-relative .png path')
   }

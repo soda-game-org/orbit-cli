@@ -82,7 +82,14 @@ test('reads reference observations by canonical media identity and rejects arbit
 test('validates lifecycle implemented in local JavaScript, not only index HTML', async (t) => {
   const { workspace, executor } = await fixture(t)
   await fs.writeFile(path.join(workspace, 'index.html'), '<!doctype html><meta name="viewport" content="width=device-width"><script src="game.js"></script><button>Leaderboard</button>')
-  await fs.writeFile(path.join(workspace, 'game.js'), 'OrbitArcade.startGame(); function end(){ OrbitArcade.endGame({score:1}) }')
+  await fs.writeFile(path.join(workspace, 'game.js'), `
+    OrbitArcade.startGame()
+    function end(){ OrbitArcade.endGame({score:1}) }
+    function leaderboard(){ OrbitArcade.openLeaderboard() }
+    addEventListener('orbit:leaderboard:update', () => {})
+    addEventListener('pointerdown', () => {})
+    addEventListener('keydown', () => {})
+  `)
   const result = JSON.parse(await executor.execute(call('validate_project', {})))
   assert.equal(result.ok, true)
 })

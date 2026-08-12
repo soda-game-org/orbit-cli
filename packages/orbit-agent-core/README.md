@@ -9,6 +9,14 @@ schemas, secret redaction, and target-neutral render-surface coordinate/evidence
 contracts. Product integrations, credentials, billing, deployment,
 target-specific prompts, and private skills remain outside this package.
 
+The package also owns two portable Arcade delivery contracts:
+
+- the structured Orbit Arcade SDK baseline consumed by Web, CLI, and desktop validators;
+- logical `listing_cover` and `app_icon` roles plus their non-blocking state model.
+
+It deliberately does not own R2 keys, local filesystem paths, image providers,
+billing, or private target standards. Those remain host adapters.
+
 Version 0.5 adds storage-neutral Project, Thread/Session, Turn, and typed input
 item schemas. Canonical turn inputs are `text`, `image`, `localImage`,
 `attachment`, and `ref`; legacy `local_image`/`local-image` inputs normalize to
