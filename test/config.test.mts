@@ -10,6 +10,8 @@ test('config accepts every regional coding provider and preserves legacy zai', a
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const store = new ConfigStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
 
+  assert.equal((await store.get()).runtime, 'auto')
+
   for (const provider of ['openai', 'zhipu-cn', 'zai', 'kimi-cn', 'kimi-global']) {
     assert.equal((await store.update({ mode: 'byok', provider })).provider, provider)
   }

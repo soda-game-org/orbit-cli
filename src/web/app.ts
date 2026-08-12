@@ -234,7 +234,7 @@ function renderTurn(run: any): HTMLElement {
   const title = document.createElement('strong')
   title.textContent = run.state === 'completed' ? 'Game ready' : run.state === 'failed' ? 'Run failed' : run.state === 'paused' || run.state === 'interrupted' ? 'Run paused' : 'Local run'
   const subtitle = document.createElement('span')
-  subtitle.textContent = `${run.mode || 'orbit'} · ${runModelLabel(run)} · ${run.runtime || 'html'}`
+  subtitle.textContent = `${run.mode || 'orbit'} · ${runModelLabel(run)} · ${run.runtime || 'auto'}`
   heading.append(title, subtitle)
   const badge = document.createElement('b')
   badge.className = `state ${run.state}`
@@ -303,7 +303,7 @@ function renderSelection(): void {
   const selected = selectedRuns.find((run: any) => run.id === selectedRunId) || latestRun(selectedRuns)
   $('thread-title').textContent = thread?.title || (selected ? selected.displayName || selected.folderName || 'Local game' : 'New game')
   $('thread-meta').textContent = selected
-    ? `${selected.mode || 'orbit'} · ${runModelLabel(selected)} · ${selected.runtime || 'html'}`
+    ? `${selected.mode || 'orbit'} · ${runModelLabel(selected)} · ${selected.runtime || 'auto'}`
     : accessLabel()
   $('prompt').placeholder = selected ? 'Describe a change to make…' : 'Describe a game to generate…'
   $('workspace').readOnly = Boolean(selectedWorkspace)
@@ -411,7 +411,7 @@ async function refresh(): Promise<any> {
       $('mode').value = state.config.mode || 'orbit'
       $('provider').value = state.config.provider || 'openrouter'
       $('key-provider').value = state.config.provider || 'openrouter'
-      $('runtime').value = state.config.runtime || 'html'
+      $('runtime').value = state.config.runtime || 'auto'
       $('model').value = state.config.model || ''
       if (!$('workspace').value) $('workspace').value = state.defaultWorkspace || ''
       configHydrated = true

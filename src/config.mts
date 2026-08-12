@@ -8,7 +8,7 @@ const DEFAULT_CONFIG = Object.freeze({
   mode: 'orbit',
   provider: 'openrouter',
   model: '',
-  runtime: 'html',
+  runtime: 'auto',
   cloudLogs: false,
 })
 
@@ -38,9 +38,9 @@ function normalizeConfig(value: JsonRecord): OrbitCliConfig {
   const provider = CODING_PROVIDER_IDS.includes(value.provider as OrbitCliConfig['provider'])
     ? value.provider as OrbitCliConfig['provider']
     : 'openrouter'
-  const runtime = ['html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser'].includes(value.runtime)
+  const runtime = ['auto', 'html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser'].includes(value.runtime)
     ? value.runtime
-    : 'html'
+    : 'auto'
   return {
     version: 1,
     mode,

@@ -40,5 +40,5 @@ export { PROVIDERS, PROVIDER_IDS, CODING_PROVIDER_IDS }
 
 export const CLIENT_SOURCES = new Set(['cli', 'cli_gui'])
 export const RUNTIMES = new Set([
-  'html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser',
+  'auto', 'html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser',
 ])

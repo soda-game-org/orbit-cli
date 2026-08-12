@@ -67,28 +67,32 @@ test('CLI GUI and terminal share the checkpointed agent loop through completion'
   const progress = []
   const manager = new RunManager({
     store,
-    config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html', cloudLogs: false }) },
+    config: { get: async () => ({ mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'auto', cloudLogs: false }) },
     credentials: { get: async () => 'configured' },
     auth: {}, apiFactory: () => { throw new Error('Official API must not be used in this BYOK test') },
     byok: { complete: async () => {
       calls += 1
       return { role: 'assistant', content: '', reasoning_content: 'provider reasoning', response_items: [{ type: 'reasoning', id: 'rs_1', encrypted_content: 'opaque' }], tool_calls: [
         tool('1', 'update_agent_plan', { summary: 'Build', todos: [{ id: 'build', title: 'Build game', status: 'in_progress', kind: 'code' }] }),
-        tool('2', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
-        tool('3', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); function finish(){ OrbitArcade.endGame({score:1}) }' }),
-        tool('4', 'validate_project', {}),
-        tool('5', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build game', status: 'completed', kind: 'code' }] }),
-        tool('6', 'finish', {}),
+        tool('2', 'select_runtime', { runtime: 'html', dimension: '2d', rationale: 'A direct 2D canvas implementation is the lightest fit for this flat arcade interaction.' }),
+        tool('3', 'write_file', { path: 'index.html', content: '<!doctype html><meta name="viewport" content="width=device-width"><button>Leaderboard</button><script src="game.js"></script>' }),
+        tool('4', 'write_file', { path: 'game.js', content: 'OrbitArcade.startGame(); function finish(){ OrbitArcade.endGame({score:1}) }' }),
+        tool('5', 'validate_project', {}),
+        tool('6', 'update_agent_plan', { summary: 'Ready', todos: [{ id: 'build', title: 'Build game', status: 'completed', kind: 'code' }] }),
+        tool('7', 'finish', {}),
       ] }
     } },
     threeD: {}, cloudLogs: null,
   })
   const run = await manager.create({
-    source: 'cli_gui', workspace, prompt: 'Build a test arcade game', mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'html',
+    source: 'cli_gui', workspace, prompt: 'Build a 2D shooter test game', mode: 'byok', provider: 'openrouter', model: 'test-model', runtime: 'auto',
     onProgress: (event) => progress.push(event),
   })
   assert.equal(calls, 1)
   assert.equal(run.source, 'cli_gui')
+  assert.equal(run.requestedRuntime, 'auto')
+  assert.equal(run.runtime, 'html')
+  assert.equal(run.runtimeDecision.dimension, '2d')
   assert.equal(run.state, 'completed')
   assert.equal(run.lastValidation.ok, true)
   assert.ok(progress.some((event) => event.type === 'model_started'))

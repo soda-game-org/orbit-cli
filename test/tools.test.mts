@@ -12,7 +12,8 @@ async function fixture(t) {
   const workspace = path.join(root, 'workspace')
   await fs.mkdir(workspace)
   const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
-  const run = await store.create({ workspace, prompt: 'test', mode: 'byok' })
+  const run = await store.create({ workspace, prompt: 'test', mode: 'byok', runtime: 'html' })
+  run.plan = { schema: 'orbit.agent-plan.v1', summary: 'Test tool', todos: [{ id: 'test', title: 'Test tool', status: 'in_progress', kind: 'implementation' }], blockers: [] }
   return { workspace, store, run, executor: new ToolExecutor({ workspace, store, run, allowShell: true }) }
 }
 
@@ -32,6 +33,31 @@ test('blocks empty edits, workspace escapes and symlink writes', async (t) => {
 test('returns a non-empty protocol result for an empty workspace listing', async (t) => {
   const { executor } = await fixture(t)
   assert.equal(await executor.execute(call('list_files', {})), 'No files')
+})
+
+test('auto runtime is decided by the agent before mutation instead of prompt keywords', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-runtime-decision-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const store = new RunStore({ directories: { config: path.join(root, 'config'), data: path.join(root, 'data') } })
+  const run = await store.create({ workspace, prompt: 'Create a 2D shooter', mode: 'byok', runtime: 'auto' })
+  const executor = new ToolExecutor({ workspace, store, run })
+  const autoTools = agentTools({ mode: 'byok', runtime: 'auto', operation: 'create' })
+  assert.equal(autoTools.some((item) => item.function.name === 'select_runtime'), true)
+  assert.equal(JSON.stringify(autoTools).includes('orbit.agent-tool-capability'), false)
+  await assert.rejects(executor.execute(call('write_file', { path: 'game.js', content: 'start()' })), /execution plan/)
+  await executor.execute(call('update_agent_plan', { summary: 'Choose architecture', todos: [{ id: 'runtime', title: 'Choose runtime', status: 'in_progress', kind: 'plan' }] }))
+  await assert.rejects(executor.execute(call('write_file', { path: 'game.js', content: 'start()' })), /select_runtime/)
+  const selected = JSON.parse(await executor.execute(call('select_runtime', {
+    runtime: 'html', dimension: '2d', rationale: 'Canvas 2D directly serves this flat playfield and touch input without framework overhead.',
+  })))
+  assert.equal(selected.runtimeDecision.runtime, 'html')
+  assert.equal(run.requestedRuntime, 'auto')
+  assert.equal(run.runtime, 'html')
+  await executor.execute(call('write_file', { path: 'game.js', content: 'start()' }))
+  assert.equal(await fs.readFile(path.join(workspace, 'game.js'), 'utf8'), 'start()')
+  assert.equal(agentTools({ mode: 'byok', runtime: 'html', operation: 'create' }).some((item) => item.function.name === 'select_runtime'), false)
 })
 
 test('reads reference observations by canonical media identity and rejects arbitrary legacy paths', async (t) => {
