@@ -24,3 +24,8 @@ sidecars are never provider fields. In canonical Turn input, `image`
 accepts only a bounded base64 raster data URL and `localImage` keeps a local
 path. Remote Web media is an `attachment`; a host may validate it into a safe
 public HTTPS/data URL or provider file in `MediaCache` for transport.
+
+Hosts that need a standalone ESM policy module, including isolated cloud
+runners, must use `buildOrbitAgentCoreModuleSource()`. The generated module is
+self-contained even when the host package was transformed with function-name
+preservation by a production bundler.

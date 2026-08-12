@@ -1,5 +1,14 @@
 # Release integrity
 
+## v0.2.1
+
+This patch keeps the CLI, provider transport, and Web PRO cloud runner on the
+same portable Agent Core. It fixes the generated ESM module used by isolated
+cloud hosts so it carries the function-name helper required after production
+bundling; without it, an E2B runner could fail during boot before its first
+Agent step. The release gate now executes that generated module after a
+keep-names bundle transform, matching the production boundary.
+
 ## v0.2.0
 
 This release adds a canonical Project → Session/Thread → Turn → Run/Attempt

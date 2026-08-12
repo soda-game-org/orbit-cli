@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { transform } from 'esbuild'
 import {
   ORBIT_AGENT_CORE_VERSION,
   ORBIT_AGENT_MODEL_OUTPUT_LIMITS,
@@ -406,14 +408,15 @@ test('compaction keeps bounded canonical visual Turn identities for later provid
   assert.equal(JSON.stringify(pinned).includes('data:image'), false)
 })
 
-test('0.5.0 generated core keeps canonical/deprecated parity and atomic batch behavior', async () => {
-  assert.equal(ORBIT_AGENT_CORE_VERSION, 'orbit-agent-core/0.5.0')
+test('0.5.1 generated core keeps canonical/deprecated parity and atomic batch behavior', async () => {
+  assert.equal(ORBIT_AGENT_CORE_VERSION, 'orbit-agent-core/0.5.1')
   assert.equal(ORBIT_PRO_AGENT_CORE_VERSION, ORBIT_AGENT_CORE_VERSION)
   assert.equal(ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, 65_536)
   assert.equal(buildOrbitAgentCoreModuleSource(), buildOrbitProAgentCoreModuleSource())
 
   const direct: any = await import('./runtime.mjs')
   const generated: any = await import(`data:text/javascript;base64,${Buffer.from(buildOrbitAgentCoreModuleSource()).toString('base64')}`)
+  assert.match(buildOrbitAgentCoreModuleSource(), /const __name =/)
   assert.deepEqual(
     Object.keys(generated).sort(),
     Object.keys(direct).filter((key) => !['buildOrbitAgentCoreModuleSource', 'buildOrbitProAgentCoreModuleSource'].includes(key)).sort(),
@@ -422,6 +425,12 @@ test('0.5.0 generated core keeps canonical/deprecated parity and atomic batch be
   assert.equal(generated.ORBIT_PRO_AGENT_CORE_VERSION, ORBIT_AGENT_CORE_VERSION)
   assert.equal(generated.ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, 65_536)
   assert.equal(typeof generated.projectAgentTurnForProvider, 'function')
+  assert.doesNotThrow(() => generated.createAgentToolCapabilityRegistry({
+    inspect_input: {
+      prePlan: 'observe', observationScope: 'input', effect: 'read', parallel: 'safe', retry: 'safe',
+      budget: { maxPrePlanCalls: 1 },
+    },
+  }))
   const projectionInput = [{ id: 'generated-image', type: 'image', url: 'data:image/png;base64,AA==' }]
   const projectionOptions = { capabilities: { vision: true, imageInputs: ['data_url'] } }
   assert.deepEqual(
@@ -438,4 +447,25 @@ test('0.5.0 generated core keeps canonical/deprecated parity and atomic batch be
   const closed = closeAgentToolBatchJournal(journal, 'test stop')
   assert.equal(closed.syntheticCount, 1)
   assert.equal(assertAgentTranscriptProtocol([assistant, ...closed.messages]), true)
+})
+
+test('generated core remains executable after a production keep-names transform', async () => {
+  const runtimeSource = await readFile(new URL('./runtime.mjs', import.meta.url), 'utf8')
+  const transformed = await transform(runtimeSource, {
+    format: 'esm',
+    keepNames: true,
+    platform: 'neutral',
+    target: 'es2022',
+  })
+  const bundledHost: any = await import(`data:text/javascript;base64,${Buffer.from(transformed.code).toString('base64')}`)
+  const generatedSource = bundledHost.buildOrbitAgentCoreModuleSource()
+  assert.match(generatedSource, /const __name =/)
+  const generated: any = await import(`data:text/javascript;base64,${Buffer.from(generatedSource).toString('base64')}`)
+  const registry = generated.createAgentToolCapabilityRegistry({
+    inspect_input: {
+      prePlan: 'observe', observationScope: 'input', effect: 'read', parallel: 'safe', retry: 'safe',
+      budget: { maxPrePlanCalls: 1 },
+    },
+  })
+  assert.equal(registry.inspect_input.prePlan, 'observe')
 })

@@ -519,7 +519,7 @@ export interface OrbitAgentConversationTransition {
   recoveredSteers?: OrbitAgentConversationInput[]
 }
 
-export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.0'
+export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.1'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION: typeof ORBIT_AGENT_CORE_VERSION
 export const ORBIT_AGENT_EXECUTION_POLICY: Readonly<OrbitAgentExecutionPolicy>
