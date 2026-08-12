@@ -333,22 +333,31 @@ export class WebCliServer {
       })
     }
     if (!url.pathname.startsWith('/api/') || !this.#authorized(request)) return send(response, 403, { error: 'Forbidden' })
-    if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
-      const auth = await this.auth.status()
+    if (request.method === 'GET' && url.pathname === '/api/access/status') {
+      const auth = { ...(await this.auth.status()), checked: true }
       let managedModel = ORBIT_MANAGED_DEFAULT_MODEL
-      if ((auth.authenticated || auth.signedIn || auth.user) && typeof this.apiFactory === 'function') {
+      if (auth.signedIn && typeof this.apiFactory === 'function') {
         try {
           const api = this.apiFactory('cli_gui')
           if (typeof api?.models === 'function') managedModel = managedOrbitModelFromCatalog(await api.models())
         } catch {}
       }
+      return send(response, 200, {
+        auth,
+        managedModel,
+        account: auth.signedIn && this.account?.status
+          ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
+          : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
+      })
+    }
+    if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
       const providers = await Promise.all(Object.entries(PROVIDERS).map(async ([id, definition]) => ({
         id,
         label: definition.label,
         purpose: definition.purpose,
         vision: definition.vision,
         modelDiscovery: Boolean(definition.modelsPath),
-        configured: Boolean(await this.credentials.get(providerCredentialAccount(id as keyof typeof PROVIDERS))),
+        configured: null,
       })))
       const storedRuns = await this.store.list()
       const threads = (await this.store.listThreads()).map(threadDisplayMetadata)
@@ -376,11 +385,9 @@ export class WebCliServer {
       const runs = await Promise.all(storedRuns.map(runDisplayMetadata))
       return send(response, 200, {
         config: await this.config.get(),
-        auth,
-        managedModel,
-        account: this.account?.status
-          ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
-          : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
+        auth: { signedIn: false, checked: false },
+        managedModel: ORBIT_MANAGED_DEFAULT_MODEL,
+        account: { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
         runs,
         threads,
         providers,
@@ -404,6 +411,14 @@ export class WebCliServer {
       await this.account.openBilling('cli_gui'); return send(response, 200, { ok: true })
     }
     if (request.method === 'POST' && url.pathname === '/api/config') return send(response, 200, await this.config.update(await bodyJson(request)))
+    if (request.method === 'GET' && url.pathname === '/api/provider/status') {
+      const provider = url.searchParams.get('provider')
+      if (!provider || !PROVIDER_IDS.includes(provider as keyof typeof PROVIDERS)) throw new Error('A supported provider is required')
+      return send(response, 200, {
+        provider,
+        configured: Boolean(await this.credentials.get(providerCredentialAccount(provider as keyof typeof PROVIDERS))),
+      })
+    }
     if (request.method === 'GET' && url.pathname === '/api/provider/models') {
       const provider = url.searchParams.get('provider')
       if (!provider || !CODING_PROVIDER_IDS.includes(provider as OrbitCodingProviderId)) throw new Error('A supported coding provider is required')

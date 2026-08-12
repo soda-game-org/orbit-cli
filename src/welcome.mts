@@ -114,8 +114,8 @@ export function renderWelcomeScreen({
     boxLine(`mode       ${mode}`),
     boxLine(`runtime    ${runtime}`),
     boxLine(`directory  ${directory}`),
-    boxLine(`account    ${account?.signedIn ? clip(account.email || 'signed in', contentWidth - 13) : 'signed out'}`),
-    boxLine(`cade       ${account?.signedIn ? account.cadeBalance == null ? 'unavailable' : `${account.cadeBalance}${account.cadeBalanceState === 'low' ? ' · low' : account.cadeBalanceState === 'exhausted' ? ' · recharge required' : ''}` : 'sign in to view'}`),
+    boxLine(`account    ${account === undefined ? 'not checked · open Account to check' : account.signedIn ? clip(account.email || 'signed in', contentWidth - 13) : 'signed out'}`),
+    boxLine(`cade       ${account === undefined ? 'checked with your account' : account.signedIn ? account.cadeBalance == null ? 'unavailable' : `${account.cadeBalance}${account.cadeBalanceState === 'low' ? ' · low' : account.cadeBalanceState === 'exhausted' ? ' · recharge required' : ''}` : 'sign in to view'}`),
     boxLine(),
     paint(bottom, DIM, color),
   ]

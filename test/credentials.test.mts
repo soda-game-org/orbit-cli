@@ -16,6 +16,7 @@ function fixture(maximum = Infinity) {
   const values = new Map()
   const store = new CredentialStore({
     entryFactory: (_service, account) => new MemoryEntry(values, account, maximum),
+    platform: 'win32',
   })
   return { store, values }
 }
@@ -25,6 +26,39 @@ test('round-trips short credentials in one operating-system entry', async () => 
   await store.set('provider:test', 'short-secret')
   assert.equal(await store.get('provider:test'), 'short-secret')
   assert.equal(values.size, 1)
+})
+
+test('stores a large OAuth session as one Keychain item outside Windows', async () => {
+  const values = new Map()
+  let reads = 0
+  const store = new CredentialStore({
+    platform: 'darwin',
+    entryFactory: (_service, account) => ({
+      setPassword: (value) => values.set(account, value),
+      getPassword: () => { reads += 1; return values.get(account) || null },
+      deletePassword: () => values.delete(account),
+    }),
+  })
+  const session = JSON.stringify({ access_token: 'a'.repeat(3_400), refresh_token: 'r'.repeat(800) })
+  await store.set('orbit-session', session)
+  assert.equal(values.size, 1)
+  assert.equal(await store.get('orbit-session'), session)
+  assert.equal(await store.get('orbit-session'), session)
+  assert.equal(reads, 0)
+})
+
+test('caches a missing credential so repeated status views do not re-open the vault', async () => {
+  let reads = 0
+  const store = new CredentialStore({
+    entryFactory: () => ({
+      setPassword: () => {},
+      getPassword: () => { reads += 1; return null },
+      deletePassword: () => {},
+    }),
+  })
+  assert.equal(await store.get('orbit-session'), null)
+  assert.equal(await store.get('orbit-session'), null)
+  assert.equal(reads, 1)
 })
 
 test('chunks a large OAuth session below the Windows Credential Manager limit', async () => {

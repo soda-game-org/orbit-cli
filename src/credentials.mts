@@ -29,9 +29,19 @@ interface ChunkManifest {
  */
 export class CredentialStore {
   readonly entryFactory: (service: string, account: string) => KeyringEntry
+  readonly platform: NodeJS.Platform
+  readonly cache = new Map<string, string | null>()
+  readonly manifests = new Map<string, ChunkManifest | null>()
 
-  constructor({ entryFactory = (service, account) => new Entry(service, account) }: { entryFactory?: (service: string, account: string) => KeyringEntry } = {}) {
+  constructor({
+    entryFactory = (service, account) => new Entry(service, account),
+    platform = process.platform,
+  }: {
+    entryFactory?: (service: string, account: string) => KeyringEntry
+    platform?: NodeJS.Platform
+  } = {}) {
     this.entryFactory = entryFactory
+    this.platform = platform
   }
 
   async set(account: string, secret: string): Promise<void> {
@@ -39,12 +49,19 @@ export class CredentialStore {
     if (typeof secret !== 'string' || !secret.trim() || secret.length > 64 * 1024) {
       throw new TypeError('Credential is invalid')
     }
-    const previous = await this.#raw(account)
+    const previousManifest = this.manifests.has(account)
+      ? this.manifests.get(account) || null
+      : this.platform === 'win32' ? parseManifest(await this.#raw(account)) : null
     const encoded = Buffer.from(secret, 'utf8').toString('base64')
-    if (encoded.length <= CHUNK_CHARACTERS) {
+    // Only Windows has the small generic-credential blob limit. Splitting an
+    // OAuth session into several macOS Keychain items causes several native
+    // permission prompts for what users rightly perceive as one account.
+    if (this.platform !== 'win32' || encoded.length <= CHUNK_CHARACTERS) {
       try {
         await this.entryFactory(SERVICE, account).setPassword(secret)
-        await this.#deleteManifestParts(account, parseManifest(previous))
+        this.cache.set(account, secret)
+        this.manifests.set(account, null)
+        await this.#deleteManifestParts(account, previousManifest)
         return
       } catch {
         throw new Error('The operating-system credential store is unavailable; no secret was saved')
@@ -71,7 +88,9 @@ export class CredentialStore {
       // The manifest is the commit point. Readers either observe the complete
       // previous generation or the complete new generation.
       await this.entryFactory(SERVICE, account).setPassword(`${CHUNK_PREFIX}${JSON.stringify(manifest)}`)
-      await this.#deleteManifestParts(account, parseManifest(previous))
+      this.cache.set(account, secret)
+      this.manifests.set(account, manifest)
+      await this.#deleteManifestParts(account, previousManifest)
     } catch {
       await Promise.all(written.map((partAccount) => this.#deleteRaw(partAccount)))
       throw new Error('The operating-system credential store is unavailable; no secret was saved')
@@ -80,9 +99,16 @@ export class CredentialStore {
 
   async get(account: string): Promise<string | null> {
     validateAccount(account)
+    if (this.cache.has(account)) return this.cache.get(account) || null
     const value = await this.#raw(account)
     const manifest = parseManifest(value)
-    if (!manifest) return value?.startsWith(CHUNK_PREFIX) ? null : value
+    if (!manifest) {
+      const resolved = value?.startsWith(CHUNK_PREFIX) ? null : value
+      this.cache.set(account, resolved)
+      this.manifests.set(account, null)
+      return resolved
+    }
+    this.manifests.set(account, manifest)
     try {
       const parts = await Promise.all(Array.from({ length: manifest.parts }, async (_, index) => {
         const part = await this.#raw(chunkAccount(account, manifest.generation, index))
@@ -92,17 +118,34 @@ export class CredentialStore {
       const decoded = Buffer.from(parts.join(''), 'base64')
       if (decoded.byteLength !== manifest.bytes
         || createHash('sha256').update(decoded).digest('hex') !== manifest.sha256) return null
-      return decoded.toString('utf8')
+      const secret = decoded.toString('utf8')
+      this.cache.set(account, secret)
+      // Migrate sessions created by older releases to one native item after
+      // the user has explicitly allowed this read. A failed migration leaves
+      // the old manifest intact and the in-process cache still avoids repeats.
+      if (this.platform !== 'win32') {
+        try {
+          await this.entryFactory(SERVICE, account).setPassword(secret)
+          await this.#deleteManifestParts(account, manifest)
+          this.manifests.set(account, null)
+        } catch {}
+      }
+      return secret
     } catch {
+      this.cache.set(account, null)
       return null
     }
   }
 
   async delete(account: string): Promise<void> {
     validateAccount(account)
-    const manifest = parseManifest(await this.#raw(account))
+    const manifest = this.manifests.has(account)
+      ? this.manifests.get(account) || null
+      : parseManifest(await this.#raw(account))
     await this.#deleteRaw(account)
     await this.#deleteManifestParts(account, manifest)
+    this.cache.set(account, null)
+    this.manifests.set(account, null)
   }
 
   async #raw(account: string): Promise<string | null> {

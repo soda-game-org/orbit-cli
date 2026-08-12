@@ -190,9 +190,6 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       cwd: dependencies.cwd || process.cwd(),
       home: dependencies.home || process.env.HOME,
       config: await app.config.get(),
-      // Account metadata enriches the launcher, but it must not make local
-      // startup feel network-bound when Orbit is offline.
-      account: app.account?.status ? await app.account.status({ timeoutMs: 1_500 }) : undefined,
     })
     if (!selected) return 0
     if (selected === 'create') {
@@ -214,8 +211,13 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
 
   if (command === 'auth') {
     if (action === 'login') console.log(JSON.stringify(await app.auth.login(), null, 2))
-    else if (action === 'status') console.log(JSON.stringify(await app.auth.status(), null, 2))
-    else if (action === 'logout') { await app.auth.logout(); console.log('Signed out.') }
+    else if (action === 'status') {
+      console.error('Orbit will check one saved session in your operating-system credential vault.')
+      console.log(JSON.stringify(await app.auth.status(), null, 2))
+    } else if (action === 'logout') {
+      console.error('Orbit will remove the saved session from your operating-system credential vault.')
+      await app.auth.logout(); console.log('Signed out.')
+    }
     else throw new Error('Usage: orbit auth login|status|logout')
     return 0
   }
@@ -223,6 +225,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
     if (action === 'open') { app.account.openProfile(); console.log('Opened Orbit account center.'); return 0 }
     if (action === 'billing') { await app.account.openBilling('cli'); console.log('Opened Orbit billing.'); return 0 }
     if (action) throw new Error('Usage: orbit account [open|billing]')
+    console.error('Orbit will check one saved session in your operating-system credential vault.')
     const account = await app.account.status()
     console.log(JSON.stringify({
       ...account,
@@ -233,6 +236,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
   }
   if (command === 'providers') {
     if (action === 'list') {
+      console.error('Orbit will check each provider entry in your operating-system credential vault.')
       const rows = []
       for (const [provider, definition] of Object.entries(PROVIDERS)) rows.push({ provider, label: definition.label, purpose: definition.purpose, configured: Boolean(await app.credentials.get(providerCredentialAccount(provider as OrbitProviderId))), vision: definition.vision, models: definition.modelsPath ? 'discoverable' : 'manual id' })
       console.table(rows)
@@ -352,6 +356,7 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
   }
   if (command === 'doctor') {
     const config = await app.config.get()
+    console.error('Orbit will check one saved session in your operating-system credential vault.')
     console.log(JSON.stringify({ version: VERSION, node: process.version, platform: process.platform, arch: process.arch, account: await app.account.status(), config, recoveredRuns: recovered.map((run: OrbitRun) => run.id) }, null, 2))
     return 0
   }

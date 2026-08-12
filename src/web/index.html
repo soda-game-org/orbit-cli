@@ -15,11 +15,11 @@
       </div>
       <div class="account-actions">
         <span class="session-light" id="session-light" aria-hidden="true"></span>
-        <span id="session-label">Checking account</span>
+        <span id="session-label" aria-live="polite">Account not checked</span>
         <button id="account-button" class="quiet" type="button" hidden>Account</button>
         <button id="billing-button" class="quiet" type="button" hidden>Billing</button>
         <button id="refresh-runs" class="icon-button" type="button" aria-label="Refresh projects" title="Refresh projects">↻</button>
-        <button id="auth-button" class="quiet" type="button">Sign in</button>
+        <button id="auth-button" class="quiet" type="button" title="Reads one saved Orbit session from your operating-system credential vault">Check account</button>
       </div>
     </header>
 
@@ -78,7 +78,7 @@
               </div>
 
               <section class="key-panel byok-control" aria-labelledby="keys-heading">
-                <div><strong id="keys-heading">Provider key</strong><span>Stored only in your operating-system credential vault.</span></div>
+                <div><strong id="keys-heading">Provider key</strong><span>Stored in your operating-system vault and checked only when you save or use this provider.</span></div>
                 <div class="key-row"><select id="key-provider" aria-label="Key provider"></select><input id="api-key" type="password" placeholder="Paste API key" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div>
               </section>
 

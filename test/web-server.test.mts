@@ -27,10 +27,12 @@ test('protects management APIs and isolates preview content on another origin', 
   run.lastValidation = { ok: true, index: 'index.html' }
   await store.transition(run, 'completed')
   const config = { get: async () => ({ mode: 'orbit' }), update: async (value) => value }
-  const auth = { status: async () => ({ signedIn: false }), login: async () => ({}), logout: async () => {} }
+  let authReads = 0
+  const auth = { status: async () => { authReads += 1; return { signedIn: false } }, login: async () => ({}), logout: async () => {} }
   let savedCredential
+  const credentialReads = []
   const credentials = {
-    get: async (account) => account === 'provider:openrouter' ? 'configured-key' : null,
+    get: async (account) => { credentialReads.push(account); return account === 'provider:openrouter' ? 'configured-key' : null },
     set: async (account, secret) => { savedCredential = { account, secret } },
   }
   const byok = { models: async (provider) => {
@@ -88,6 +90,8 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.match(appSource, /if \(\$\('preview'\)\.dataset\.url !== body\.url\)/)
   assert.match(appSource, /if \(!await ensureRunAccess\(\)\)\s*return/)
   assert.match(appSource, /if \(\$\('mode'\)\.value === 'orbit' && !state\.auth\.signedIn\)/)
+  assert.match(appSource, /clearPreview\('No completed build in this chat'\)/)
+  assert.doesNotMatch(appSource, /api\/threads/)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`)).status, 403)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: { ...headers, Origin: 'http://evil.invalid' } })).status, 403)
   const bootstrapResponse = await fetch(`${started.origin}/api/bootstrap`, { headers })
@@ -95,8 +99,11 @@ test('protects management APIs and isolates preview content on another origin', 
   const bootstrap = await bootstrapResponse.json()
   assert.deepEqual(bootstrap.managedModel, { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' })
   assert.equal(bootstrap.providers.find((provider) => provider.id === 'zhipu-cn').label, 'Zhipu BigModel (China)')
-  assert.equal(bootstrap.providers.find((provider) => provider.id === 'openrouter').configured, true)
-  assert.equal(bootstrap.providers.find((provider) => provider.id === 'kimi-global').configured, false)
+  assert.equal(bootstrap.auth.checked, false)
+  assert.equal(bootstrap.providers.find((provider) => provider.id === 'openrouter').configured, null)
+  assert.equal(bootstrap.providers.find((provider) => provider.id === 'kimi-global').configured, null)
+  assert.equal(authReads, 0)
+  assert.deepEqual(credentialReads, [])
   assert.equal(bootstrap.defaultWorkspace, path.join(process.cwd(), 'orbit-game'))
   assert.equal(bootstrap.runs[0].failureCategory, 'none')
   assert.equal(bootstrap.runs[0].recoveryDisposition, 'terminal')
@@ -110,6 +117,15 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.equal(Object.hasOwn(persistedCheckpoint, 'recoveryDisposition'), false)
   const { Origin: _origin, ...browserGetHeaders } = headers
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: browserGetHeaders })).status, 200)
+  assert.equal(authReads, 0)
+  assert.deepEqual(credentialReads, [])
+  const access = await fetch(`${started.origin}/api/access/status`, { headers }).then((response) => response.json())
+  assert.equal(access.auth.checked, true)
+  assert.equal(access.auth.signedIn, false)
+  assert.equal(authReads, 1)
+  const providerStatus = await fetch(`${started.origin}/api/provider/status?provider=openrouter`, { headers }).then((response) => response.json())
+  assert.deepEqual(providerStatus, { provider: 'openrouter', configured: true })
+  assert.deepEqual(credentialReads, ['provider:openrouter'])
   const deniedRun = await fetch(`${started.origin}/api/runs/stream`, {
     method: 'POST', headers, body: JSON.stringify({ workspace, prompt: 'Must not start', mode: 'byok', provider: 'kimi-global', runtime: 'html' }),
   })

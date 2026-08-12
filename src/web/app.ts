@@ -48,17 +48,23 @@ function status(message: string, error = false): void {
 function authView(): void {
   $('session-light').classList.toggle('online', state.auth.signedIn)
   const cade = state.account?.cadeBalance
-  $('session-label').textContent = state.auth.signedIn
+  $('session-label').textContent = !state.auth.checked
+    ? 'Account not checked'
+    : state.auth.signedIn
     ? `${state.auth.email || 'Orbit account'}${cade == null ? '' : ` · ${cade} Cade`}`
     : 'Signed out'
-  $('auth-button').textContent = state.auth.signedIn ? 'Sign out' : 'Sign in'
+  $('auth-button').textContent = !state.auth.checked ? 'Check account' : state.auth.signedIn ? 'Sign out' : 'Sign in'
+  $('auth-button').title = !state.auth.checked
+    ? 'Reads one saved Orbit session from your operating-system credential vault'
+    : ''
   $('account-button').hidden = !state.auth.signedIn
   $('billing-button').hidden = !state.auth.signedIn
   $('billing-button').classList.toggle('warning', ['low', 'exhausted'].includes(state.account?.cadeBalanceState))
 }
 
-function configured(providerId: string): boolean {
-  return Boolean(state.providers?.find((provider: any) => provider.id === providerId)?.configured)
+function configured(providerId: string): boolean | null {
+  const value = state.providers?.find((provider: any) => provider.id === providerId)?.configured
+  return value === true ? true : value === false ? false : null
 }
 
 function managedModelLabel(): string {
@@ -100,7 +106,7 @@ function providerOptions(): void {
   const option = (provider: any) => {
     const item = document.createElement('option')
     item.value = provider.id
-    item.textContent = `${provider.label}${provider.configured ? ' · configured' : ''}`
+    item.textContent = `${provider.label}${provider.configured === true ? ' · configured' : ''}`
     return item
   }
   $('provider').replaceChildren(...providers.filter((provider: any) => provider.purpose === 'coding').map(option))
@@ -134,6 +140,7 @@ function gameProjects(): Array<{ workspace: string; threads: any[]; latest: any 
   const byWorkspace = new Map<string, any[]>()
   for (const thread of state.threads || []) {
     if (!thread.workspace) continue
+    if (thread.kind !== 'assets' && threadRuns(thread).length === 0) continue
     const threads = byWorkspace.get(thread.workspace) || []
     threads.push(thread)
     byWorkspace.set(thread.workspace, threads)
@@ -174,14 +181,14 @@ function renderProjects(): void {
       const top = document.createElement('span')
       top.className = 'workspace-top'
       const title = document.createElement('strong')
-      title.textContent = thread.title || latest?.displayName || 'New session'
+      title.textContent = latest?.gameName || latest?.folderName || latest?.id || thread.id
       const projectState = document.createElement('span')
       projectState.className = `project-state ${latest?.state || 'queued'}`
       projectState.textContent = latest?.state || 'new'
       top.append(title, projectState)
       const id = document.createElement('span')
       id.className = 'project-id'
-      id.textContent = `${thread.id.replace(/^thread_/, '').slice(0, 12)}${latest ? ` · ${shortRunId(latest.id)}` : ''}`
+      id.textContent = `Chat ${thread.id.replace(/^thread_/, '').slice(0, 8)}${latest ? ` · Run ${shortRunId(latest.id)}` : ''}`
       const prompt = document.createElement('span')
       prompt.className = 'project-prompt'
       prompt.textContent = latest?.prompt || 'Start a turn in this project'
@@ -301,11 +308,13 @@ function renderSelection(): void {
   const thread = activeThread()
   const selectedRuns = thread ? threadRuns(thread) : []
   const selected = selectedRuns.find((run: any) => run.id === selectedRunId) || latestRun(selectedRuns)
-  $('thread-title').textContent = thread?.title || (selected ? selected.displayName || selected.folderName || 'Local game' : 'New game')
+  $('thread-title').textContent = selected
+    ? selected.gameName || selected.folderName || selected.id
+    : selectedWorkspace ? 'New chat' : 'New game'
   $('thread-meta').textContent = selected
     ? `${selected.mode || 'orbit'} · ${runModelLabel(selected)} · ${selected.runtime || 'auto'}`
     : accessLabel()
-  $('prompt').placeholder = selected ? 'Describe a change to make…' : 'Describe a game to generate…'
+  $('prompt').placeholder = selectedWorkspace ? 'Describe the next change…' : 'Describe a game to create…'
   $('workspace').readOnly = Boolean(selectedWorkspace)
   launchView()
 }
@@ -327,7 +336,11 @@ function runView(): void {
 function accessLabel(): string {
   if ($('mode')?.value === 'byok') {
     const provider = state.providers?.find((item: any) => item.id === $('provider').value)
-    return provider?.configured ? `BYOK · ${provider.label}` : `BYOK · ${provider?.label || 'provider'} key required`
+    return provider?.configured === true
+      ? `BYOK · ${provider.label}`
+      : provider?.configured === false
+        ? `BYOK · ${provider?.label || 'provider'} key required`
+        : `BYOK · ${provider?.label || 'provider'} key not checked`
   }
   return state.auth.signedIn
     ? `Orbit Cloud · ${visibleModelLabel('orbit', $('model')?.value)}`
@@ -337,19 +350,27 @@ function accessLabel(): string {
 function launchView(): void {
   if (!$('launch')) return
   const editing = workspaceHasGame($('workspace').value || selectedWorkspace)
-  let label = editing ? 'Apply' : 'Generate'
+  const label = editing ? 'Send' : 'Create game'
   let needsAccess = false
   if ($('mode').value === 'orbit' && !state.auth.signedIn) {
-    label = editing ? 'Sign in to apply' : 'Sign in to generate'
     needsAccess = true
-  } else if ($('mode').value === 'byok' && !configured($('provider').value)) {
-    label = `Add ${state.providers?.find((provider: any) => provider.id === $('provider').value)?.label || 'provider'} key`
+  } else if ($('mode').value === 'byok' && configured($('provider').value) !== true) {
     needsAccess = true
   }
   $('launch').textContent = running ? 'Working…' : label
   $('launch').disabled = running
   $('launch').classList.toggle('needs-access', needsAccess)
   if (!selectedWorkspace) $('thread-meta').textContent = accessLabel()
+}
+
+function clearPreview(message = 'Select a completed project'): void {
+  activePreviewRunId = ''
+  activePreviewUrl = ''
+  $('preview').removeAttribute('src')
+  $('preview').dataset.url = ''
+  $('preview-stage').classList.remove('has-preview')
+  $('preview-state').textContent = message
+  $('preview-empty').textContent = message
 }
 
 function selectProject(workspace: string, runId = '', threadId = ''): void {
@@ -362,6 +383,7 @@ function selectProject(workspace: string, runId = '', threadId = ''): void {
   runView()
   const completed = latestRun((activeThread() ? threadRuns(activeThread()) : []).filter((run: any) => run.state === 'completed' && !['asset3d', 'assetimage'].includes(run.kind)))
   if (completed) preview(completed.id, generation).catch((error) => status(errorMessage(error), true))
+  else clearPreview('No completed build in this chat')
 }
 
 function newProject(): void {
@@ -373,12 +395,7 @@ function newProject(): void {
   $('prompt').value = ''
   $('references').value = ''
   $('reference-list').textContent = 'No images'
-  activePreviewRunId = ''
-  activePreviewUrl = ''
-  $('preview').removeAttribute('src')
-  $('preview').dataset.url = ''
-  $('preview-stage').classList.remove('has-preview')
-  $('preview-state').textContent = 'Select a completed project'
+  clearPreview('Create a game to preview it')
   viewKeys.runs = ''
   runView()
   $('prompt').focus()
@@ -386,15 +403,12 @@ function newProject(): void {
 
 async function newChat(): Promise<void> {
   if (!selectedWorkspace) return newProject()
-  const workspace = selectedWorkspace
-  const generation = navigationGeneration
-  const body = await api('/api/threads', {
-    method: 'POST',
-    body: JSON.stringify({ workspace, title: 'New session' }),
-  })
-  await refresh()
-  if (generation !== navigationGeneration || selectedWorkspace !== workspace) return
-  selectProject(workspace, '', body.thread.id)
+  navigationGeneration += 1
+  selectedThreadId = ''
+  selectedRunId = ''
+  clearPreview('Preview appears after this chat completes a build')
+  viewKeys.runs = ''
+  runView()
   $('prompt').value = ''
   $('prompt').focus()
 }
@@ -403,7 +417,22 @@ async function refresh(): Promise<any> {
   if (refreshPromise) return refreshPromise
   refreshPromise = (async () => {
     const body = await api('/api/bootstrap')
-    state = body
+    const previousAuth = state.auth?.checked ? state.auth : null
+    const previousAccount = previousAuth ? state.account : null
+    const previousManagedModel = previousAuth?.signedIn ? state.managedModel : null
+    const providerAccess = new Map((state.providers || [])
+      .filter((provider: any) => typeof provider.configured === 'boolean')
+      .map((provider: any) => [provider.id, provider.configured]))
+    state = {
+      ...body,
+      auth: previousAuth || body.auth,
+      account: previousAccount || body.account,
+      managedModel: previousManagedModel || body.managedModel,
+      providers: (body.providers || []).map((provider: any) => ({
+        ...provider,
+        configured: providerAccess.has(provider.id) ? providerAccess.get(provider.id) : provider.configured,
+      })),
+    }
     authView()
     providerOptions()
     if (!configHydrated) {
@@ -433,18 +462,50 @@ async function files(): Promise<Array<{ name: string; data: string }>> {
 }
 
 async function ensureOrbitAuth(): Promise<boolean> {
+  if (!state.auth.checked) {
+    status('Orbit will read one saved session from your operating-system credential vault…')
+    await nextPaint()
+    await refreshAccountAccess()
+  }
   if (state.auth.signedIn) return true
   status('Complete Orbit sign-in in your browser…')
   await api('/api/auth/login', { method: 'POST', body: '{}' })
-  await refresh()
+  await refreshAccountAccess()
   if (!state.auth.signedIn) throw new Error('Orbit sign-in did not complete')
   return true
+}
+
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+async function refreshAccountAccess(): Promise<void> {
+  const body = await api('/api/access/status')
+  state.auth = body.auth
+  state.account = body.account
+  state.managedModel = body.managedModel || state.managedModel
+  authView()
+  providerView()
+  renderSelection()
+}
+
+async function ensureProviderAccess(providerId: string): Promise<boolean> {
+  const provider = state.providers?.find((item: any) => item.id === providerId)
+  if (provider?.configured == null) {
+    status(`Orbit will check one saved ${provider?.label || providerId} key in your operating-system credential vault…`)
+    await nextPaint()
+    const body = await api(`/api/provider/status?provider=${encodeURIComponent(providerId)}`)
+    provider.configured = body.configured === true
+    providerOptions()
+    providerView()
+  }
+  return configured(providerId) === true
 }
 
 async function ensureRunAccess(): Promise<boolean> {
   if ($('mode').value === 'orbit') return ensureOrbitAuth()
   const providerId = $('provider').value
-  if (configured(providerId)) return true
+  if (await ensureProviderAccess(providerId)) return true
   $('settings').open = true
   $('key-provider').value = providerId
   $('api-key').focus()
@@ -638,10 +699,22 @@ $('browse-models').addEventListener('click', async () => {
 })
 $('auth-button').addEventListener('click', async () => {
   try {
-    if (state.auth.signedIn) await api('/api/auth/logout', { method: 'POST', body: '{}' })
-    else await ensureOrbitAuth()
-    await refresh()
-    status(state.auth.signedIn ? 'Signed in' : 'Signed out')
+    if (!state.auth.checked) {
+      status('Orbit will read one saved session from your operating-system credential vault…')
+      await nextPaint()
+      await refreshAccountAccess()
+      status(state.auth.signedIn ? 'Signed in' : 'No saved Orbit session found')
+    } else if (state.auth.signedIn) {
+      await api('/api/auth/logout', { method: 'POST', body: '{}' })
+      state.auth = { signedIn: false, checked: true }
+      state.account = { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' }
+      authView()
+      launchView()
+      status('Signed out')
+    } else {
+      await ensureOrbitAuth()
+      status('Signed in')
+    }
   } catch (error) { status(errorMessage(error), true) }
 })
 $('account-button').addEventListener('click', async () => {
@@ -659,6 +732,8 @@ $('billing-button').addEventListener('click', async () => {
 $('save-key').addEventListener('click', async () => {
   try {
     await api('/api/provider', { method: 'POST', body: JSON.stringify({ provider: $('key-provider').value, apiKey: $('api-key').value }) })
+    const provider = state.providers?.find((item: any) => item.id === $('key-provider').value)
+    if (provider) provider.configured = true
     $('api-key').value = ''
     await refresh()
     status('Provider key saved in the OS credential vault')
@@ -686,7 +761,7 @@ $('generate-3d-asset').addEventListener('click', async () => {
   try {
     const mode = $('asset-mode').value
     if (mode === 'orbit') await ensureOrbitAuth()
-    else if (!configured('replicate')) {
+    else if (!await ensureProviderAccess('replicate')) {
       $('key-provider').value = 'replicate'
       $('settings').open = true
       $('api-key').focus()
