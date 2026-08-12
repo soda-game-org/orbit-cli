@@ -5,7 +5,7 @@
  * E2B imports. Those capabilities belong to host adapters.
  */
 
-export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.0'
+export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.1'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION = ORBIT_AGENT_CORE_VERSION
 
@@ -3109,6 +3109,12 @@ const CORE_EXPORTS = [
 /** Build the exact ESM module uploaded beside host runners. */
 export function buildOrbitAgentCoreModuleSource() {
   const declarations = [
+    // Function#toString() observes the bundled function body at runtime. When
+    // a host bundle enables esbuild keepNames, nested functions can reference
+    // its private __name helper. The uploaded module runs outside that bundle,
+    // so carry a compatible helper with the generated source instead of
+    // depending on the host bundler's closure.
+    `const __name = (target, value) => { try { Object.defineProperty(target, 'name', { value, configurable: true }) } catch {} return target }`,
     `const ORBIT_AGENT_CORE_VERSION = ${JSON.stringify(ORBIT_AGENT_CORE_VERSION)}`,
     `const ORBIT_PRO_AGENT_CORE_VERSION = ${JSON.stringify(ORBIT_PRO_AGENT_CORE_VERSION)}`,
     `const ORBIT_AGENT_EXECUTION_POLICY = Object.freeze(${JSON.stringify(ORBIT_AGENT_EXECUTION_POLICY)})`,
