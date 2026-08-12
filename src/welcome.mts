@@ -1,6 +1,7 @@
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import { VERSION } from './constants.mjs'
+import { checkForCliUpdate, type OrbitCliUpdate } from './update-check.mjs'
 
 export const WELCOME_ACTIONS = Object.freeze([
   { id: 'create', label: 'Create a game', detail: 'Describe it, then let Orbit build and validate it' },
@@ -28,6 +29,7 @@ interface WelcomeScreenOptions {
   columns?: number
   color?: boolean
   account?: { signedIn?: boolean; email?: string | null; cadeBalance?: number | null; cadeBalanceState?: string }
+  update?: OrbitCliUpdate | null
 }
 
 type AskQuestion = (message: string) => string | undefined | Promise<string | undefined>
@@ -47,6 +49,7 @@ interface WelcomeMenuOptions {
   config?: WelcomeConfig
   color?: boolean
   account?: WelcomeScreenOptions['account']
+  checkForUpdate?: () => Promise<OrbitCliUpdate | null>
 }
 
 const RESET = '\u001b[0m'
@@ -94,6 +97,7 @@ export function renderWelcomeScreen({
   columns = 88,
   color = true,
   account,
+  update,
 }: WelcomeScreenOptions = {}): string {
   const width = clamp(Number(columns) || 88, 68, 100)
   const contentWidth = width - 4
@@ -118,10 +122,21 @@ export function renderWelcomeScreen({
     boxLine(`cade       ${account?.signedIn ? account.cadeBalance == null ? 'unavailable' : `${account.cadeBalance}${account.cadeBalanceState === 'low' ? ' · low' : account.cadeBalanceState === 'exhausted' ? ' · recharge required' : ''}` : 'sign in to view'}`),
     boxLine(),
     paint(bottom, DIM, color),
+  ]
+
+  if (update) {
+    rows.push(
+      '',
+      paint(`UPDATE AVAILABLE  v${update.currentVersion} → v${update.latestVersion}`, BOLD, color),
+      `Run: ${update.command}`,
+    )
+  }
+
+  rows.push(
     '',
     paint('What would you like to do?', BOLD, color),
     '',
-  ]
+  )
 
   const labelWidth = 22
   for (const [index, action] of WELCOME_ACTIONS.entries()) {
@@ -178,17 +193,25 @@ export async function runWelcomeMenu({
   config = {},
   color = !process.env.NO_COLOR && process.env.TERM !== 'dumb',
   account,
+  checkForUpdate = checkForCliUpdate,
 }: WelcomeMenuOptions = {}): Promise<WelcomeActionId | null> {
   if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== 'function') return null
   let selectedIndex = 0
+  let update: OrbitCliUpdate | null = null
+  let active = true
   const render = () => {
-    stdout.write(`\u001b[2J\u001b[H${renderWelcomeScreen({ cwd, home, config, account, selectedIndex, columns: stdout.columns, color })}\n`)
+    stdout.write(`\u001b[2J\u001b[H${renderWelcomeScreen({ cwd, home, config, account, update, selectedIndex, columns: stdout.columns, color })}\n`)
   }
 
   stdin.setRawMode(true)
   stdin.resume()
   stdout.write('\u001b[?25l')
   render()
+  void checkForUpdate().then((available) => {
+    if (!active || !available) return
+    update = available
+    render()
+  }).catch(() => undefined)
   try {
     while (true) {
       const chunk = String(await new Promise((resolve) => stdin.once('data', resolve)))
@@ -208,6 +231,7 @@ export async function runWelcomeMenu({
       }
     }
   } finally {
+    active = false
     stdin.setRawMode(false)
     stdin.pause()
     stdout.write('\u001b[?25h\u001b[2J\u001b[H')

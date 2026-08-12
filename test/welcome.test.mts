@@ -42,6 +42,19 @@ test('welcome action arguments invoke existing CLI commands', () => {
   assert.equal(welcomeActionArguments('create'), null)
 })
 
+test('welcome screen gives an explicit upgrade command only when an update is available', () => {
+  const screen = renderWelcomeScreen({
+    color: false,
+    update: {
+      currentVersion: '0.2.1',
+      latestVersion: '0.3.0',
+      command: 'npm install -g @soda_game/orbit-cli@latest',
+    },
+  })
+  assert.match(screen, /UPDATE AVAILABLE  v0\.2\.1 → v0\.3\.0/)
+  assert.match(screen, /npm install -g @soda_game\/orbit-cli@latest/)
+})
+
 test('create action collects a prompt and resolves its workspace', async () => {
   const answers = ['Build a one-button space game', './games/space']
   const result = await collectCreateArguments({
@@ -71,15 +84,27 @@ test('interactive menu handles keyboard navigation and restores the terminal', a
     write: (value) => writes.push(String(value)),
   }
 
-  const selected = runWelcomeMenu({ stdin, stdout, color: false })
+  const selected = runWelcomeMenu({
+    stdin,
+    stdout,
+    color: false,
+    checkForUpdate: async () => ({
+      currentVersion: '0.2.1',
+      latestVersion: '0.3.0',
+      command: 'npm install -g @soda_game/orbit-cli@latest',
+    }),
+  })
   setImmediate(() => {
-    stdin.emit('data', Buffer.from('\u001b[B'))
-    setImmediate(() => stdin.emit('data', Buffer.from('\r')))
+    setImmediate(() => {
+      stdin.emit('data', Buffer.from('\u001b[B'))
+      setImmediate(() => stdin.emit('data', Buffer.from('\r')))
+    })
   })
 
   assert.equal(await selected, 'web')
   assert.deepEqual(stdin.rawModes, [true, false])
   assert.match(writes.join(''), /Open Web CLI/)
+  assert.match(writes.join(''), /UPDATE AVAILABLE/)
   assert.ok(writes.join('').endsWith('\u001b[?25h\u001b[2J\u001b[H'))
 })
 
