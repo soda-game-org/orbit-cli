@@ -551,8 +551,6 @@ export class RunManager {
         workspace: run.workspace, run, store: this.store, api, image: this.image, threeD: this.threeD,
         allowShell: options.allowShell, retryUnsafe: options.retryUnsafe, signal: controller.signal,
       })
-      const tools = agentTools({ mode: run.mode, generateImages: run.generateImages, generate3d: run.generate3d })
-      const system = run.mode === 'byok' ? await this.#systemPrompt(run) : ''
       let executionState = createAgentExecutionState(run.executionState || {})
       await this.#migrateLegacyToolBatch(run)
       if (run.pendingToolBatch) {
@@ -570,6 +568,8 @@ export class RunManager {
         await this.store.save(run)
         await this.#event(run, 'model_started', { requestKey, iteration: run.iteration })
         const providerMessages = await this.#providerMessages(run)
+        const tools = agentTools({ mode: run.mode, runtime: run.runtime, operation: run.operation, generateImages: run.generateImages, generate3d: run.generate3d })
+        const system = run.mode === 'byok' ? await this.#systemPrompt(run) : ''
         let assistant: Dynamic
         let contentFiltered = false
         if (run.mode === 'orbit') {
@@ -1343,6 +1343,9 @@ export class RunManager {
     return [
       'You are the public Orbit CLI local coding agent. Work only through the declared tools.',
       'Create or edit the selected local workspace. Use update_agent_plan first, keep changes focused, validate, and call finish.',
+      run.operation === 'create' && run.runtime === 'auto'
+        ? 'Runtime is intentionally undecided. After update_agent_plan, call select_runtime before project mutation. Choose the lightest suitable architecture from explicit dimension, camera, rendering, input, physics, existing source, delivery constraints, and maintainability. Genre words such as shooter, racing, platformer, runner, or arena do not by themselves require R3F, Three.js, Phaser, or React.'
+        : `Runtime ${run.runtime} is an explicit user choice or existing-project constraint. Preserve it unless technically impossible.`,
       ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
       'Only the generic public skill below is available locally. Specialized official game templates and private Orbit skills are not present; never claim otherwise.',
       run.generate3d ? '3D generation is enabled and may be used when it materially helps the requested game.' : '3D generation is disabled; use local procedural or existing assets.',

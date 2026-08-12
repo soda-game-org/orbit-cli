@@ -103,7 +103,7 @@ export function renderWelcomeScreen({
   const mode = config.mode === 'byok'
     ? `BYOK · ${config.provider || 'provider not selected'}`
     : 'Orbit Cloud'
-  const runtime = config.runtime || 'html'
+  const runtime = config.runtime || 'auto'
   const directory = clip(displayPath(cwd, home), contentWidth - 13)
   const boxLine = (value = '') => `│ ${pad(value, contentWidth)} │`
   const rows = [

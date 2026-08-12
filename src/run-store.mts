@@ -127,7 +127,7 @@ export class RunStore {
       mode: input.mode === 'byok' ? 'byok' : 'orbit',
       provider: input.provider || null,
       model: input.model || '',
-      runtime: input.runtime || 'html',
+      runtime: input.runtime || 'auto',
       generateImages: input.generateImages === true,
       generate3d: input.generate3d === true,
       cloudLogs: input.cloudLogs === true,

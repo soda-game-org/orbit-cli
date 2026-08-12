@@ -5,6 +5,10 @@ import { MAX_TOOL_OUTPUT_CHARS } from './constants.mjs'
 import {
   agentPlanOpenBlockingTodosForFinish,
   completePublishTodosForFinish,
+  createAgentToolCapabilityRegistry,
+  defineAgentToolCapability,
+  evaluateAgentToolPrePlan,
+  getAgentToolCapability,
   normalizeAgentPlan,
 } from '@soda_game/orbit-agent-core'
 import { canonicalDirectory, durableAtomicWriteFile, isContained, redactWorkspacePath, sha256, sleep } from './util.mjs'
@@ -17,8 +21,17 @@ function tool(name: string, description: string, parameters: Dynamic): ToolDefin
   return { type: 'function', function: { name, description, parameters } }
 }
 
+function declaredTool(
+  name: string,
+  description: string,
+  parameters: Dynamic,
+  capability: Dynamic,
+): ToolDefinition {
+  return defineAgentToolCapability(tool(name, description, parameters), capability)
+}
+
 const BASE_TOOLS = [
-  tool('update_agent_plan', 'Create or update the execution plan.', {
+  declaredTool('update_agent_plan', 'Create or update the execution plan.', {
     type: 'object', additionalProperties: false, required: ['summary', 'todos'],
     properties: {
       summary: { type: 'string' }, currentTodoId: { type: 'string' }, blockers: { type: 'array', items: { type: 'string' } },
@@ -27,36 +40,45 @@ const BASE_TOOLS = [
         properties: { id: { type: 'string' }, title: { type: 'string' }, status: { type: 'string' }, kind: { type: 'string' }, detail: { type: 'string' }, evidence: { type: 'string' } },
       } },
     },
-  }),
-  tool('write_file', 'Write one workspace file.', { type: 'object', additionalProperties: false, required: ['path', 'content'], properties: { path: { type: 'string' }, content: { type: 'string' } } }),
-  tool('edit_file', 'Replace one exact substring in one workspace file.', { type: 'object', additionalProperties: false, required: ['path', 'old_string', 'new_string'], properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } } }),
-  tool('apply_patch', 'Apply multiple exact substring replacements.', { type: 'object', additionalProperties: false, required: ['edits'], properties: { edits: { type: 'array', minItems: 1, maxItems: 24, items: { type: 'object', additionalProperties: false, required: ['path', 'old_string', 'new_string'], properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } } } } } }),
-  tool('read_file', 'Read a workspace file by line range.', { type: 'object', additionalProperties: false, required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } }),
-  tool('list_files', 'List workspace files.', { type: 'object', additionalProperties: false, properties: {} }),
-  tool('grep_files', 'Search workspace text files.', { type: 'object', additionalProperties: false, required: ['pattern'], properties: { pattern: { type: 'string' }, case_sensitive: { type: 'boolean' } } }),
-  tool('read_reference_media', 'Read structured observations for specific Turn media identities. Vision-capable providers already receive the original image as a Turn input.', {
+  }, { prePlan: 'establish', effect: 'control', parallel: 'serial', retry: 'safe' }),
+  declaredTool('write_file', 'Write one workspace file.', { type: 'object', additionalProperties: false, required: ['path', 'content'], properties: { path: { type: 'string' }, content: { type: 'string' } } }, { effect: 'write', parallel: 'serial', retry: 'idempotent' }),
+  declaredTool('edit_file', 'Replace one exact substring in one workspace file.', { type: 'object', additionalProperties: false, required: ['path', 'old_string', 'new_string'], properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } } }, { effect: 'write', parallel: 'serial', retry: 'idempotent' }),
+  declaredTool('apply_patch', 'Apply multiple exact substring replacements.', { type: 'object', additionalProperties: false, required: ['edits'], properties: { edits: { type: 'array', minItems: 1, maxItems: 24, items: { type: 'object', additionalProperties: false, required: ['path', 'old_string', 'new_string'], properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } } } } } }, { effect: 'write', parallel: 'serial', retry: 'idempotent' }),
+  declaredTool('read_file', 'Read a workspace file by line range.', { type: 'object', additionalProperties: false, required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } }, { prePlan: 'observe', observationScope: 'source', effect: 'read', parallel: 'safe', retry: 'safe', budget: { maxPrePlanCalls: 24 } }),
+  declaredTool('list_files', 'List workspace files.', { type: 'object', additionalProperties: false, properties: {} }, { prePlan: 'observe', observationScope: 'source', effect: 'read', parallel: 'safe', retry: 'safe', budget: { maxPrePlanCalls: 8 } }),
+  declaredTool('grep_files', 'Search workspace text files.', { type: 'object', additionalProperties: false, required: ['pattern'], properties: { pattern: { type: 'string' }, case_sensitive: { type: 'boolean' } } }, { prePlan: 'observe', observationScope: 'source', effect: 'read', parallel: 'safe', retry: 'safe', budget: { maxPrePlanCalls: 16 } }),
+  declaredTool('read_reference_media', 'Read structured observations for specific Turn media identities. Vision-capable providers already receive the original image as a Turn input.', {
     type: 'object', additionalProperties: false,
     properties: {
       media_ids: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
       image_path: { type: 'string', description: 'Deprecated legacy alias; accepted only when it exactly matches a reference attached to this Turn.' },
     },
-  }),
-  tool('shell', 'Run an explicitly enabled npm install/build or JavaScript syntax check. Project build scripts execute with the current operating-system user permissions.', { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' }, timeout_ms: { type: 'integer' } } }),
-  tool('validate_project', 'Validate source contracts, build output, paths, and local preview readiness.', { type: 'object', additionalProperties: false, properties: {} }),
-  tool('finish', 'Finish only after validation passes.', { type: 'object', additionalProperties: false, properties: {} }),
+  }, { prePlan: 'observe', observationScope: 'input', effect: 'read', parallel: 'serial', retry: 'safe', budget: { maxPrePlanCalls: 8 } }),
+  declaredTool('shell', 'Run an explicitly enabled npm install/build or JavaScript syntax check. Project build scripts execute with the current operating-system user permissions.', { type: 'object', additionalProperties: false, required: ['command'], properties: { command: { type: 'string' }, timeout_ms: { type: 'integer' } } }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' }),
+  declaredTool('validate_project', 'Validate source contracts, build output, paths, and local preview readiness.', { type: 'object', additionalProperties: false, properties: {} }, { effect: 'execute', parallel: 'serial', retry: 'safe' }),
+  declaredTool('finish', 'Finish only after validation passes.', { type: 'object', additionalProperties: false, properties: {} }, { effect: 'control', parallel: 'serial', retry: 'safe' }),
 ]
 
-const OFFICIAL_3D_TOOL = tool('generate_humanoid_character', 'Generate one original rigged humanoid through the authenticated Orbit Worker when 3D generation was enabled.', {
-  type: 'object', additionalProperties: false, required: ['prompt'], properties: { prompt: { type: 'string', minLength: 8, maxLength: 1024 } },
-})
+const RUNTIME_DECISION_TOOL = declaredTool('select_runtime', 'Record the coding agent architecture decision for an auto-runtime create after update_agent_plan and before project mutation. Choose from explicit dimension, camera, rendering, input, physics, existing-source, and maintainability requirements; genre wording alone is not sufficient evidence for a framework.', {
+  type: 'object', additionalProperties: false, required: ['runtime', 'dimension', 'rationale'],
+  properties: {
+    runtime: { type: 'string', enum: ['html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser'] },
+    dimension: { type: 'string', enum: ['2d', '2.5d', '3d', 'mixed'] },
+    rationale: { type: 'string', minLength: 12, maxLength: 600 },
+  },
+}, { effect: 'control', parallel: 'serial', retry: 'safe' })
 
-const BYOK_3D_TOOL = tool('generate_3d_model', 'Generate one original GLB model with the user-configured Replicate key when 3D generation was enabled.', {
+const OFFICIAL_3D_TOOL = declaredTool('generate_humanoid_character', 'Generate one original rigged humanoid through the authenticated Orbit Worker when 3D generation was enabled.', {
+  type: 'object', additionalProperties: false, required: ['prompt'], properties: { prompt: { type: 'string', minLength: 8, maxLength: 1024 } },
+}, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
+
+const BYOK_3D_TOOL = declaredTool('generate_3d_model', 'Generate one original GLB model with the user-configured Replicate key when 3D generation was enabled.', {
   type: 'object', additionalProperties: false, required: ['prompt', 'output_path'],
   properties: { prompt: { type: 'string', minLength: 8, maxLength: 8000 }, output_path: { type: 'string' }, face_count: { type: 'integer' }, enable_pbr: { type: 'boolean' } },
-})
+}, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
 
 function imageTool(mode: OrbitMode): ToolDefinition {
-  return tool('generate_image', mode === 'orbit'
+  return declaredTool('generate_image', mode === 'orbit'
     ? 'Generate one original game image through the authenticated Orbit Worker. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use.'
     : 'Generate one original game image with the user-configured Replicate key. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use. The user\'s Replicate account may be billed.', {
   type: 'object', additionalProperties: false, required: ['prompt', 'output_path'],
@@ -65,11 +87,12 @@ function imageTool(mode: OrbitMode): ToolDefinition {
     output_path: { type: 'string', description: 'Safe workspace-relative .png path.' },
     aspect_ratio: { type: 'string', enum: ['1:1', '9:16', '16:9'] },
   },
-  })
+  }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
 }
 
-export function agentTools({ mode, generateImages = false, generate3d = false }: { mode: OrbitMode; generateImages?: boolean; generate3d?: boolean }): ToolDefinition[] {
+export function agentTools({ mode, runtime = 'auto', operation = 'create', generateImages = false, generate3d = false }: { mode: OrbitMode; runtime?: string; operation?: 'create' | 'edit'; generateImages?: boolean; generate3d?: boolean }): ToolDefinition[] {
   const tools = [...BASE_TOOLS]
+  if (runtime === 'auto' && operation === 'create') tools.splice(1, 0, RUNTIME_DECISION_TOOL)
   if (generateImages) tools.splice(tools.length - 3, 0, imageTool(mode))
   if (generate3d) tools.splice(tools.length - 3, 0, mode === 'orbit' ? OFFICIAL_3D_TOOL : BYOK_3D_TOOL)
   return tools
@@ -282,6 +305,7 @@ export class ToolExecutor {
   readonly allowShell: boolean
   readonly retryUnsafe: boolean
   readonly signal?: AbortSignal | null
+  readonly toolCapabilities: ReturnType<typeof createAgentToolCapabilityRegistry>
 
   constructor({ workspace, run, store, api, image = null, threeD = null, allowShell = false, retryUnsafe = false, signal = null }: { workspace: string; run: OrbitRun; store: any; api?: any; image?: any; threeD?: any; allowShell?: boolean; retryUnsafe?: boolean; signal?: AbortSignal | null }) {
     this.workspace = workspace
@@ -293,6 +317,10 @@ export class ToolExecutor {
     this.allowShell = allowShell
     this.retryUnsafe = retryUnsafe
     this.signal = signal
+    this.toolCapabilities = createAgentToolCapabilityRegistry(agentTools({
+      mode: run.mode, runtime: run.runtime, operation: run.operation,
+      generateImages: run.generateImages, generate3d: run.generate3d,
+    }))
   }
 
   async execute(call: Dynamic): Promise<string> {
@@ -300,12 +328,52 @@ export class ToolExecutor {
     let args: Dynamic
     try { args = JSON.parse(call?.function?.arguments || '{}') } catch { throw new Error(`Invalid JSON arguments for ${name}`) }
     const root = await canonicalDirectory(this.workspace)
+    const prePlanEvaluation = evaluateAgentToolPrePlan(name, {
+      registry: this.toolCapabilities,
+      // An already-journaled batch must be settled during crash recovery before
+      // another model turn, even when it came from a legacy checkpoint without
+      // the newer explicit plan field.
+      hasPlan: Boolean(this.run.plan || this.run.pendingToolBatch),
+      allowSourceObservation: true,
+      observationCounts: {
+        input: Number(this.run.prePlanInputObservationCount || 0),
+        source: Number(this.run.prePlanSourceObservationCount || 0),
+      },
+    })
+    if (!prePlanEvaluation.allowed) {
+      throw new Error('Establish the execution plan before tools that are not declared as bounded input/source observations')
+    }
+    if (prePlanEvaluation.consumesObservation && prePlanEvaluation.scope === 'input') {
+      this.run.prePlanInputObservationCount = Number(this.run.prePlanInputObservationCount || 0) + 1
+    } else if (prePlanEvaluation.consumesObservation && prePlanEvaluation.scope === 'source') {
+      this.run.prePlanSourceObservationCount = Number(this.run.prePlanSourceObservationCount || 0) + 1
+    }
     if (name === 'update_agent_plan') {
       const plan = normalizeAgentPlan(args, this.run.plan)
       if (!plan) throw new Error('update_agent_plan requires at least one valid todo')
       this.run.plan = plan
       await this.store.save(this.run)
       return JSON.stringify({ ok: true, plan }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+    }
+    if (name === 'select_runtime') {
+      if (this.run.operation !== 'create' || this.run.runtime !== 'auto') throw new Error('select_runtime is only available for an auto-runtime create')
+      if (this.run.runtimeDecision) throw new Error(`Runtime was already selected as ${this.run.runtimeDecision.runtime}`)
+      const runtime = String(args.runtime || '').trim()
+      const dimension = String(args.dimension || '').trim()
+      const rationale = String(args.rationale || '').trim()
+      if (!['html', 'vanilla-ts', 'react-vite', 'react-three-fiber', 'three-vanilla', 'phaser'].includes(runtime)) throw new Error('select_runtime requires a concrete supported runtime')
+      if (!['2d', '2.5d', '3d', 'mixed'].includes(dimension) || rationale.length < 12) throw new Error('select_runtime requires a supported dimension and concrete rationale')
+      if (['react-three-fiber', 'three-vanilla'].includes(runtime) && dimension !== '3d') throw new Error('A Three.js runtime requires an explicit 3d dimension decision')
+      this.run.runtimeDecision = { schema: 'orbit.agent-runtime-decision.v1', runtime, dimension, rationale, decidedBy: 'agent' }
+      this.run.requestedRuntime = 'auto'
+      this.run.runtime = runtime
+      await this.store.save(this.run)
+      return JSON.stringify({ ok: true, runtimeDecision: this.run.runtimeDecision }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+    }
+    const capability = getAgentToolCapability(name, this.toolCapabilities)
+    if (this.run.operation === 'create' && this.run.runtime === 'auto' && !this.run.runtimeDecision
+      && capability.effect !== 'read' && name !== 'update_agent_plan' && name !== 'select_runtime') {
+      throw new Error('Record the architecture with select_runtime after update_agent_plan and before mutating or executing the project')
     }
     if (name === 'write_file') return JSON.stringify(await atomicWrite(root, args.path, args.content))
     if (name === 'read_file') {

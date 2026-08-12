@@ -62,6 +62,8 @@ export interface OrbitRun extends Record<string, any> {
   provider: OrbitCodingProviderId | null
   model: string
   runtime: string
+  requestedRuntime?: string
+  runtimeDecision?: { schema: 'orbit.agent-runtime-decision.v1'; runtime: string; dimension: string; rationale: string; decidedBy: 'agent' }
   generateImages: boolean
   generate3d: boolean
   cloudLogs: boolean

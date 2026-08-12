@@ -75,6 +75,8 @@ orbit
 
 Choose **Create a game** to enter a persistent terminal session. It starts in the current directory, accepts follow-up requests without exiting, keeps the active workspace/model/runtime visible, and collapses live agent work into a final result when each run ends. The other launcher actions open the Web CLI, local runs, account login, provider list, diagnostics, and command reference.
 
+The default runtime is `auto`: after creating its execution plan, the coding agent records a structured runtime decision before it may modify the project. It weighs dimension, camera, rendering, controls, physics, existing source, delivery constraints, and maintainability. Genre words and skill labels do not hard-code a framework; `--runtime html|vanilla-ts|react-vite|react-three-fiber|three-vanilla|phaser` remains an explicit user constraint.
+
 Inside the session, type a request naturally or use the discoverable command palette:
 
 ```text

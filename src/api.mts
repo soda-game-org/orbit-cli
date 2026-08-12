@@ -95,7 +95,7 @@ export class OrbitApi {
     })
   }
 
-  complete({ cloudRunId, requestKey, purpose = 'agent', messages, tools = [], runtime = 'html', operation = 'create', maxOutputTokens = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, signal }: { cloudRunId: string; requestKey: string; purpose?: string; messages: Record<string, any>[]; tools?: Record<string, any>[]; runtime?: string; operation?: string; maxOutputTokens?: number; signal?: AbortSignal | null }): Promise<any> {
+  complete({ cloudRunId, requestKey, purpose = 'agent', messages, tools = [], runtime = 'auto', operation = 'create', maxOutputTokens = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, signal }: { cloudRunId: string; requestKey: string; purpose?: string; messages: Record<string, any>[]; tools?: Record<string, any>[]; runtime?: string; operation?: string; maxOutputTokens?: number; signal?: AbortSignal | null }): Promise<any> {
     return this.request(`/api/engine/runs/${encodeURIComponent(cloudRunId)}/llm`, {
       method: 'POST',
       signal,
