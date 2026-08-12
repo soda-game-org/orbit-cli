@@ -1,5 +1,24 @@
 # Release integrity
 
+## v0.2.4
+
+This release rebuilds the local Web CLI as a polished React and HeroUI
+application while preserving the same local-first Agent and workspace model.
+Games and Tasks now have explicit hierarchy and names, Orbit Cloud models are
+discovered automatically, account and BYOK state are visible before a run, and
+settings use complete, accessible controls instead of raw form fields.
+
+Run progress updates without full-page flashing, collapses into an expandable
+record after completion, and leaves the final summary as the primary result.
+The preview surface now includes a 4:3 mode and serves validated built output,
+including UTF-8 game content and Store SDK media, rather than treating source
+files as a finished browser build.
+
+The portable Agent and provider packages advance to
+`@soda_game/orbit-agent-core@0.5.2` and
+`@soda_game/orbit-provider-core@0.3.2` so local and hosted Orbit runtimes share
+the same media-delivery and execution contracts.
+
 ## v0.2.1
 
 This patch keeps the CLI, provider transport, and Web PRO cloud runner on the

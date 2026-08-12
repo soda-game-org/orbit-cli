@@ -103,7 +103,7 @@ Use these commands inside the terminal session:
 /new ./another-game
 ```
 
-In the local Web CLI, **New chat** creates another Session in the selected Project, while **New project** selects a separate workspace. The first Turn in a new Session for an existing game is still an edit of that Project; it does not recreate or replace the workspace. Legacy `runs/<id>/checkpoint.json` and `events.jsonl` remain in place and are indexed lazily, so upgrading does not move, delete, or rewrite old run history.
+In the local Web CLI, **New task** creates another Session for the selected Game, while **New game** selects a separate workspace. The first Turn in a new Task for an existing game is still an edit of that Game; it does not recreate or replace the workspace. Legacy `runs/<id>/checkpoint.json` and `events.jsonl` remain in place and are indexed lazily, so upgrading does not move, delete, or rewrite old run history.
 
 ### Create your first game
 
