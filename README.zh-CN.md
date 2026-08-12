@@ -101,7 +101,7 @@ Orbit 把一个本地工作区视为一个 **Project**。同一 Project 可以�
 /new ./another-game
 ```
 
-在本地 Web CLI 中，**New chat** 会在当前 Project 内新建 Session，**New project** 才会选择独立工作区。已有游戏即使进入一个空的新 Session，第一轮仍然按修改现有 Project 处理，不会重新创建或覆盖工作区。旧版 `runs/<id>/checkpoint.json` 和 `events.jsonl` 会留在原位置并按需建立索引；升级不会搬移、删除或重写旧运行历史。
+在本地 Web CLI 中，**New task** 会为当前 Game 新建 Session，**New game** 才会选择独立工作区。已有游戏即使进入一个空的新 Task，第一轮仍然按修改现有 Game 处理，不会重新创建或覆盖工作区。旧版 `runs/<id>/checkpoint.json` 和 `events.jsonl` 会留在原位置并按需建立索引；升级不会搬移、删除或重写旧运行历史。
 
 ### 创建第一个游戏
 
