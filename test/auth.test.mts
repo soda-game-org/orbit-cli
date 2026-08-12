@@ -21,17 +21,18 @@ function session() {
 
 function clientFixture({ authorizationOrigin = SUPABASE_URL } = {}) {
   let redirectTo = ''
+  const fixtureSession = session()
   const client = { auth: {
     signInWithOAuth: async (input) => {
       redirectTo = input.options.redirectTo
       return { data: { url: `${authorizationOrigin}/auth/v1/authorize?provider=google` }, error: null }
     },
     exchangeCodeForSession: async (code) => code === 'one-time-code'
-      ? { data: { session: session() }, error: null }
+      ? { data: { session: fixtureSession }, error: null }
       : { data: { session: null }, error: { message: 'bad code' } },
-    refreshSession: async () => ({ data: { session: session() }, error: null }),
+    refreshSession: async () => ({ data: { session: fixtureSession }, error: null }),
   } }
-  return { client, redirect: () => redirectTo }
+  return { client, session: fixtureSession, redirect: () => redirectTo }
 }
 
 function getWithHost(url, host) {
@@ -62,7 +63,7 @@ test('uses a random loopback callback, rejects a bad Host, and stores only the e
   assert.notEqual(callback.port, '')
   assert.match(callback.pathname, /^\/oauth\/callback\/[A-Za-z0-9_-]{40,}$/)
   assert.equal((await callbackRequests).status, 200)
-  assert.deepEqual(result, { userId: session().user.id, email: session().user.email, expiresAt: session().expires_at })
+  assert.deepEqual(result, { userId: fixture.session.user.id, email: fixture.session.user.email, expiresAt: fixture.session.expires_at })
   assert.equal((await auth.status()).signedIn, true)
 })
 

@@ -908,12 +908,12 @@ export async function generateReplicateImage({
   apiKey, prompt, aspectRatio = '1:1', model = REPLICATE_IMAGE_MODEL, state = {},
   signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
 }: {
-  apiKey: string; prompt: string; aspectRatio?: '1:1' | '9:16' | '16:9'; model?: string
+  apiKey: string; prompt: string; aspectRatio?: '1:1' | '3:4' | '9:16' | '16:9'; model?: string
   state?: OrbitReplicateImageState; signal?: AbortSignal | null; fetchImpl?: typeof fetch
   persist?: (state: OrbitReplicateImageState) => void | Promise<void>
   onProgress?: (prediction: JsonRecord) => void | Promise<void>; pollIntervalMs?: number
 }): Promise<{ predictionId: string; status: string; outputUrl: string; model: string }> {
-  const ratio = ['1:1', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '1:1'
+  const ratio = ['1:1', '3:4', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '1:1'
   const selectedModel = String(model || REPLICATE_IMAGE_MODEL).trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(selectedModel)) {
     throw new TypeError('Replicate image model id is invalid')

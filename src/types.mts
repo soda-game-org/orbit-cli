@@ -4,6 +4,7 @@ import type {
   OrbitAgentInputItem,
   OrbitAgentMediaCache,
   OrbitAgentMediaObservation,
+  OrbitAgentStoreMediaManifest,
   OrbitAgentToolBatchJournal,
 } from '@soda_game/orbit-agent-core'
 
@@ -80,6 +81,8 @@ export interface OrbitRun extends Record<string, any> {
   inputItems?: OrbitAgentInputItem[]
   mediaObservations?: OrbitAgentMediaObservation[]
   mediaCache?: OrbitAgentMediaCache
+  storeMedia?: OrbitAgentStoreMediaManifest
+  storeMediaGeneration?: Record<string, Record<string, any>>
   visionCapability?: { provider: OrbitCodingProviderId | 'orbit'; model: string; vision: boolean; maxOutputTokens?: number; confirmedAt: string }
   turnInputProjected?: boolean
   references: OrbitReference[]

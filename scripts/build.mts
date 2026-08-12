@@ -3,6 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { build as viteBuild } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const executable = process.platform === 'win32' ? 'tsc.cmd' : 'tsc'
@@ -29,5 +32,25 @@ async function runTypeScript(project: string): Promise<void> {
 await runTypeScript('packages/orbit-provider-core/tsconfig.json')
 await runTypeScript('tsconfig.build.json')
 
+await viteBuild({
+  root,
+  configFile: false,
+  plugins: [react(), tailwindcss()],
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+  },
+  build: {
+    outDir: path.join(root, 'dist/src/web'),
+    emptyOutDir: false,
+    cssCodeSplit: false,
+    lib: { entry: path.join(root, 'src/web/app.tsx'), formats: ['es'] },
+    rollupOptions: {
+      output: {
+        entryFileNames: 'app.js',
+        assetFileNames: (asset) => asset.name?.endsWith('.css') ? 'app.css' : 'assets/[name]-[hash][extname]',
+      },
+    },
+  },
+})
+
 await fs.copyFile(path.join(root, 'src/web/index.html'), path.join(root, 'dist/src/web/index.html'))
-await fs.copyFile(path.join(root, 'src/web/app.css'), path.join(root, 'dist/src/web/app.css'))

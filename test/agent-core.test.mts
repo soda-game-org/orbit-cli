@@ -3,6 +3,8 @@ import test from 'node:test'
 import {
   ORBIT_AGENT_EXECUTION_POLICY,
   ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA,
+  ORBIT_AGENT_STORE_MEDIA_ROLES,
+  ORBIT_ARCADE_SDK_CONTRACT,
   ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
   ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA,
   agentTranscriptProtocolIssues,
@@ -20,6 +22,7 @@ import {
   defineAgentToolCapability,
   evaluateAgentToolPrePlan,
   normalizeAgentCheckpoint,
+  normalizeAgentStoreMediaManifest,
   normalizeAgentCapabilityProfile,
   normalizeAgentToolBatchJournal,
   normalizeAgentPlan,
@@ -27,12 +30,40 @@ import {
   projectAgentMessagesForProvider,
   recordAgentToolBatchResult,
   renderSurfaceActivityIssues,
+  orbitArcadeSdkContractText,
+  orbitArcadeSdkSourceIssues,
   selectAgentToolBatchErrorKey,
   transitionAgentExecutionState,
 } from '@soda_game/orbit-agent-core'
 
 const toolCall = (id: string, name = 'read_file') => ({
   id, type: 'function', function: { name, arguments: '{}' },
+})
+
+test('public core owns the portable Orbit SDK and store-media roles', () => {
+  assert.equal(ORBIT_ARCADE_SDK_CONTRACT.lifecycle.start.event, 'orbit:game:start')
+  assert.equal(ORBIT_AGENT_STORE_MEDIA_ROLES.listingCover.aspectRatio, '3:4')
+  assert.equal(ORBIT_AGENT_STORE_MEDIA_ROLES.appIcon.preferredWidth, 512)
+  assert.match(orbitArcadeSdkContractText({ detail: 'compact' }), /desktop keyboard parity/i)
+  assert.deepEqual(orbitArcadeSdkSourceIssues(`
+    window.OrbitArcade.startGame()
+    window.OrbitArcade.endGame({ score: 1 })
+    window.OrbitArcade.openLeaderboard()
+    addEventListener('pointerdown', play)
+    addEventListener('keydown', play)
+  `), [])
+  assert.match(orbitArcadeSdkSourceIssues('const game = true').join('\n'), /start lifecycle/i)
+
+  const media = normalizeAgentStoreMediaManifest({
+    projectId: 'project-1',
+    assets: {
+      listing_cover: { state: 'generated', location: '.orbit/artifacts/store/listing-cover.png', width: 768, height: 1024 },
+      app_icon: { state: 'skipped', reason: 'capability_unavailable' },
+    },
+  })
+  assert.equal(media.assets.listing_cover.requiredForPlayable, false)
+  assert.equal(media.assets.app_icon.state, 'skipped')
+  assert.equal('r2Key' in media.assets.listing_cover, false)
 })
 
 test('public CLI consumes the shared execution budget and streak state machine', () => {

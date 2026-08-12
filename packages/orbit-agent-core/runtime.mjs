@@ -5,7 +5,7 @@
  * E2B imports. Those capabilities belong to host adapters.
  */
 
-export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.1'
+export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.2'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION = ORBIT_AGENT_CORE_VERSION
 
@@ -165,6 +165,125 @@ export const ORBIT_AGENT_RENDER_SURFACE_POLICY = Object.freeze({
   logicalRatioTolerance: 0.18,
   minDetailSamples: 12,
 })
+
+/**
+ * Portable Orbit Arcade host/iframe contract. Hosts own transport and UI, but
+ * coding agents and validators must agree on these capabilities. Keep
+ * target-specific delivery rules in host adapters.
+ */
+export const ORBIT_ARCADE_SDK_CONTRACT_SCHEMA = 'orbit.arcade-sdk-contract.v1'
+export const ORBIT_ARCADE_SDK_CONTRACT = Object.freeze({
+  schema: ORBIT_ARCADE_SDK_CONTRACT_SCHEMA,
+  lifecycle: Object.freeze({
+    start: Object.freeze({ method: 'OrbitArcade.startGame', event: 'orbit:game:start' }),
+    end: Object.freeze({ method: 'OrbitArcade.endGame', event: 'orbit:game:end' }),
+  }),
+  required: Object.freeze([
+    'lifecycle',
+    'score_and_end_state',
+    'replay',
+    'pause_and_help',
+    'mobile_touch',
+    'desktop_keyboard',
+    'responsive_resize',
+    'leaderboard',
+  ]),
+  optional: Object.freeze(['coin', 'cade', 'llm_chat', 'multiplayer', 'camera', 'microphone', 'motion']),
+  forbiddenDirectCapabilities: Object.freeze([
+    'network',
+    'websocket',
+    'device_permissions',
+    'external_navigation',
+  ]),
+})
+
+export function orbitArcadeSdkContractText(options = {}) {
+  const detail = options?.detail === 'compact' ? 'compact' : 'minimal'
+  const lines = [
+    'Orbit Arcade SDK contract:',
+    '- Define/use window.OrbitArcade. Call OrbitArcade.startGame() when active gameplay begins and OrbitArcade.endGame({ outcome, score, scoreLabel }) exactly once when a run ends.',
+    '- Provide a visible start path, score/end state, replay, How to Play, pause, mobile touch controls, desktop keyboard parity, and responsive resize behavior.',
+    '- Provide OrbitArcade.openLeaderboard(), post orbit:leaderboard:open, and consume orbit:leaderboard:update for the game-over leaderboard flow.',
+    '- Preserve the existing SDK and input paths during edits; losing lifecycle, input, pause, replay, or leaderboard is a blocking regression.',
+    '- Optional coin, Cade, LLM chat, multiplayer, camera, microphone, and motion features must use the Orbit host bridge, never direct network, socket, permission, or external-navigation APIs.',
+  ]
+  if (detail === 'compact') {
+    lines.push('- Multiplayer public play uses the host matchmaker; device and LLM features require explicit user actions and local failure fallbacks.')
+  }
+  return lines.join('\n')
+}
+
+/** Conservative source-level baseline; runtime hosts may add deeper QA. */
+export function orbitArcadeSdkSourceIssues(source) {
+  const text = String(source || '')
+  const issues = []
+  if (!/OrbitArcade\s*\.\s*startGame|orbit:game:start/.test(text)) issues.push('Orbit start lifecycle is missing.')
+  if (!/OrbitArcade\s*\.\s*endGame|orbit:game:end/.test(text)) issues.push('Orbit end lifecycle is missing.')
+  if (!/openLeaderboard|orbit:leaderboard:open|orbit:leaderboard:update/.test(text)) issues.push('Orbit leaderboard flow is missing.')
+  if (!/pointer|touch|click|mousedown|mouseup/i.test(text)) issues.push('Mobile pointer/touch input is missing.')
+  if (!/keydown|keyup|KeyboardEvent/.test(text)) issues.push('Desktop keyboard input is missing.')
+  return issues
+}
+
+/**
+ * Store media is a logical delivery contract, not a storage contract. Web
+ * adapters may resolve roles to R2 URLs; local adapters resolve them to safe
+ * project or artifact paths.
+ */
+export const ORBIT_AGENT_STORE_MEDIA_SCHEMA = 'orbit.agent-store-media.v1'
+export const ORBIT_AGENT_STORE_MEDIA_ROLES = Object.freeze({
+  listingCover: Object.freeze({
+    role: 'listing_cover',
+    aspectRatio: '3:4',
+    preferredWidth: 768,
+    preferredHeight: 1024,
+    requiredForPlayable: false,
+  }),
+  appIcon: Object.freeze({
+    role: 'app_icon',
+    aspectRatio: '1:1',
+    preferredWidth: 512,
+    preferredHeight: 512,
+    requiredForPlayable: false,
+  }),
+})
+
+function normalizeAgentStoreMediaAsset(raw, role) {
+  const source = executionObject(raw)
+  const state = ['provided', 'generated', 'fallback', 'skipped', 'missing', 'failed'].includes(source.state)
+    ? source.state
+    : 'missing'
+  const value = {
+    role,
+    state,
+    requiredForPlayable: false,
+  }
+  const location = agentPortableText(source.location, 2_000)
+  const mediaType = agentPortableText(source.mediaType || source.media_type, 120)
+  const reason = agentPortableText(source.reason, 1_000)
+  const digest = agentPortableText(source.digest, 240)
+  if (location) value.location = location
+  if (mediaType) value.mediaType = mediaType
+  if (reason) value.reason = reason
+  if (digest) value.digest = digest
+  if (Number.isSafeInteger(source.width) && source.width > 0) value.width = source.width
+  if (Number.isSafeInteger(source.height) && source.height > 0) value.height = source.height
+  return Object.freeze(value)
+}
+
+export function normalizeAgentStoreMediaManifest(raw, options = {}) {
+  const source = executionObject(raw)
+  const assets = executionObject(source.assets)
+  return Object.freeze({
+    schema: ORBIT_AGENT_STORE_MEDIA_SCHEMA,
+    projectId: agentPortableId(source.projectId || source.project_id || options.projectId),
+    updatedAt: agentOptionalTimestamp(source.updatedAt || source.updated_at || options.updatedAt),
+    assets: Object.freeze({
+      listing_cover: normalizeAgentStoreMediaAsset(assets.listing_cover || assets.listingCover, 'listing_cover'),
+      app_icon: normalizeAgentStoreMediaAsset(assets.app_icon || assets.appIcon, 'app_icon'),
+    }),
+  })
+}
 
 function executionObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -3036,6 +3155,7 @@ const CORE_HELPERS = [
   visualCompactionPins,
   assembleCompactedMessages,
   normalizedCheckpointRecentUsers,
+  normalizeAgentStoreMediaAsset,
 ]
 
 const CORE_EXPORTS = [
@@ -3051,6 +3171,9 @@ const CORE_EXPORTS = [
   ['projectAgentInputItemsForProvider', projectAgentInputItemsForProvider],
   ['assertAgentInputProjectionReady', assertAgentInputProjectionReady],
   ['projectAgentTurnForProvider', projectAgentTurnForProvider],
+  ['orbitArcadeSdkContractText', orbitArcadeSdkContractText],
+  ['orbitArcadeSdkSourceIssues', orbitArcadeSdkSourceIssues],
+  ['normalizeAgentStoreMediaManifest', normalizeAgentStoreMediaManifest],
   ['normalizeAgentToolCapability', normalizeAgentToolCapability],
   ['defineAgentToolCapability', defineAgentToolCapability],
   ['createAgentToolCapabilityRegistry', createAgentToolCapabilityRegistry],
@@ -3122,6 +3245,10 @@ export function buildOrbitAgentCoreModuleSource() {
     `const ORBIT_AGENT_TOOL_CAPABILITY = Symbol.for(ORBIT_AGENT_TOOL_CAPABILITY_SCHEMA)`,
     `const ORBIT_AGENT_RENDER_SURFACE_CONTRACT = ${JSON.stringify(ORBIT_AGENT_RENDER_SURFACE_CONTRACT)}`,
     `const ORBIT_AGENT_RENDER_SURFACE_POLICY = Object.freeze(${JSON.stringify(ORBIT_AGENT_RENDER_SURFACE_POLICY)})`,
+    `const ORBIT_ARCADE_SDK_CONTRACT_SCHEMA = ${JSON.stringify(ORBIT_ARCADE_SDK_CONTRACT_SCHEMA)}`,
+    `const ORBIT_ARCADE_SDK_CONTRACT = Object.freeze(${JSON.stringify(ORBIT_ARCADE_SDK_CONTRACT)})`,
+    `const ORBIT_AGENT_STORE_MEDIA_SCHEMA = ${JSON.stringify(ORBIT_AGENT_STORE_MEDIA_SCHEMA)}`,
+    `const ORBIT_AGENT_STORE_MEDIA_ROLES = Object.freeze(${JSON.stringify(ORBIT_AGENT_STORE_MEDIA_ROLES)})`,
     `const ORBIT_AGENT_MODEL_OUTPUT_LIMITS = Object.freeze(${JSON.stringify(ORBIT_AGENT_MODEL_OUTPUT_LIMITS)})`,
     `const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA)}`,
     `const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA)}`,
@@ -3153,6 +3280,10 @@ export function buildOrbitAgentCoreModuleSource() {
     'ORBIT_AGENT_TOOL_CAPABILITY',
     'ORBIT_AGENT_RENDER_SURFACE_CONTRACT',
     'ORBIT_AGENT_RENDER_SURFACE_POLICY',
+    'ORBIT_ARCADE_SDK_CONTRACT_SCHEMA',
+    'ORBIT_ARCADE_SDK_CONTRACT',
+    'ORBIT_AGENT_STORE_MEDIA_SCHEMA',
+    'ORBIT_AGENT_STORE_MEDIA_ROLES',
     'ORBIT_AGENT_MODEL_OUTPUT_LIMITS',
     'ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA',
     'ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA',

@@ -240,6 +240,15 @@ When your game is ready, publish it to [Orbit Arcade](https://orbit-arcade.com):
 orbit publish <run-id>
 ```
 
+Before upload, the CLI reads Orbit's authenticated, versioned publish contract
+and verifies its SHA-256 digest. A completed run also records optional local
+store media under `.orbit/artifacts/store/`: a 3:4 listing cover and a square
+app icon. If image generation was enabled, the host attempts these after the
+playable game passes validation; failures never turn a valid game into a failed
+run. `orbit publish` uploads verified local media when present, while the Orbit
+service stores it in R2. When media is absent (including text-only BYOK setups),
+the server keeps the existing non-blocking cover/icon backfill behavior.
+
 Publishing is always an explicit step and requires an Orbit login.
 
 ## Docs

@@ -7,6 +7,7 @@ import {
   ORBIT_AGENT_EXECUTION_POLICY,
   ORBIT_AGENT_INTERNAL_MESSAGE_SCHEMA,
   ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
+  orbitArcadeSdkContractText,
   assertAgentTranscriptProtocol,
   closeAgentToolBatchJournal,
   commitAgentMessageCompaction,
@@ -30,6 +31,7 @@ import { OrbitApiError } from './api.mjs'
 import { asError, type OrbitMessage, type OrbitRun, type OrbitToolBatchControl, type OrbitToolCall } from './types.mjs'
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
 import { byokReferenceMediaCache, mediaObservation, persistentVisionTurnInputMessage, projectTurnInputMessage, referenceMetadataFromInputItems, turnInputItems } from './turn-input.mjs'
+import { ensureLocalStoreMedia } from './store-media.mjs'
 
 type Dynamic = Record<string, any>
 
@@ -1319,6 +1321,17 @@ export class RunManager {
     assertAgentTranscriptProtocol(run.messages)
 
     if (control.finishRequested) {
+      const storeMedia = await ensureLocalStoreMedia({
+        run,
+        image: this.image,
+        api,
+        retryUnsafe: options.retryUnsafe,
+        persist: async () => this.store.save(run),
+      })
+      await this.#event(run, 'store_media_ready', {
+        listingCover: storeMedia.assets.listing_cover.state,
+        appIcon: storeMedia.assets.app_icon.state,
+      })
       run.result = { workspace: run.workspace, validation: run.lastValidation }
       run.lastError = null
       if (run.mode === 'orbit' && run.cloudRunId) await api.settle(run.cloudRunId, 'complete').catch(() => undefined)
@@ -1347,6 +1360,7 @@ export class RunManager {
         ? 'Runtime is intentionally undecided. After update_agent_plan, call select_runtime before project mutation. Choose the lightest suitable architecture from explicit dimension, camera, rendering, input, physics, existing source, delivery constraints, and maintainability. Genre words such as shooter, racing, platformer, runner, or arena do not by themselves require R3F, Three.js, Phaser, or React.'
         : `Runtime ${run.runtime} is an explicit user choice or existing-project constraint. Preserve it unless technically impossible.`,
       ORBIT_AGENT_RENDER_SURFACE_CONTRACT,
+      orbitArcadeSdkContractText({ detail: 'compact' }),
       'Only the generic public skill below is available locally. Specialized official game templates and private Orbit skills are not present; never claim otherwise.',
       run.generate3d ? '3D generation is enabled and may be used when it materially helps the requested game.' : '3D generation is disabled; use local procedural or existing assets.',
       run.generateImages

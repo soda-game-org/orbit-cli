@@ -10,6 +10,7 @@ import {
   evaluateAgentToolPrePlan,
   getAgentToolCapability,
   normalizeAgentPlan,
+  orbitArcadeSdkSourceIssues,
 } from '@soda_game/orbit-agent-core'
 import { canonicalDirectory, durableAtomicWriteFile, isContained, redactWorkspacePath, sha256, sleep } from './util.mjs'
 import type { OrbitMode, OrbitRun } from './types.mjs'
@@ -288,9 +289,7 @@ async function validateProject(root: string): Promise<{ ok: boolean; index?: str
   const source = sourceParts.join('\n')
   const issues: string[] = []
   if (!/<meta[^>]+name=["']viewport["']/i.test(html)) issues.push('Missing mobile viewport metadata.')
-  if (!/OrbitArcade\s*\.\s*startGame|orbit:game:start/.test(source)) issues.push('Orbit start lifecycle is missing.')
-  if (!/OrbitArcade\s*\.\s*endGame|orbit:game:end/.test(source)) issues.push('Orbit end lifecycle is missing.')
-  if (!/leaderboard/i.test(source)) issues.push('A reachable leaderboard action is missing.')
+  issues.push(...orbitArcadeSdkSourceIssues(source))
   if (/(?:https?:)?\/\/(?:unpkg|cdn\.jsdelivr|cdnjs|esm\.sh)/i.test(source)) issues.push('External CDN dependencies are not allowed.')
   return { ok: issues.length === 0, index, issues }
 }

@@ -23,10 +23,14 @@ const STATIC = new Map<string, readonly [string, string]>([
 ])
 
 async function readStaticFile(file: string): Promise<Buffer> {
-  const candidates = [
-    new URL(`./${file}`, import.meta.url),
-    new URL(`../../dist/src/web/${file}`, import.meta.url),
-  ]
+  const local = new URL(`./${file}`, import.meta.url)
+  const built = new URL(`../../dist/src/web/${file}`, import.meta.url)
+  // The source stylesheet contains Tailwind/HeroUI imports and must not be
+  // served directly. Prefer the Vite artifact while developing from src/;
+  // packaged builds naturally fall back to the adjacent dist file.
+  const candidates = file === 'app.js' || file === 'app.css'
+    ? [built, local]
+    : [local, built]
   for (const candidate of candidates) {
     const body = await fs.readFile(candidate).catch(() => null)
     if (body) return body
@@ -122,10 +126,43 @@ function previewType(file: string): string {
   return types[path.extname(file).toLowerCase()] || 'application/octet-stream'
 }
 
+function orbitCatalogView(value: unknown): Array<{ id: string; label: string; vision: boolean }> {
+  const catalog = value && typeof value === 'object' ? value as Record<string, any> : {}
+  const seen = new Set<string>()
+  return (Array.isArray(catalog.models) ? catalog.models : []).flatMap((candidate: any) => {
+    const id = typeof candidate?.id === 'string' ? candidate.id.trim().slice(0, 160) : ''
+    if (!id || candidate?.available === false || seen.has(id)) return []
+    seen.add(id)
+    const labelSource = typeof candidate?.label === 'string' && candidate.label.trim()
+      ? candidate.label
+      : typeof candidate?.name === 'string' && candidate.name.trim() ? candidate.name : id
+    return [{
+      id,
+      label: labelSource.trim().slice(0, 160),
+      vision: candidate?.supportsVision === true || candidate?.supports_vision === true || candidate?.capabilities?.vision === true,
+    }]
+  })
+}
+
 async function runDisplayMetadata(run: OrbitRun): Promise<Record<string, any>> {
   const workspace = String(run?.workspace || '')
   const folderName = workspace ? path.basename(workspace) : ''
   let gameName = String(run?.result?.title || run?.lastValidation?.title || '').trim()
+  let previewReady = false
+  if (workspace && run.state === 'completed' && run.lastValidation?.ok === true) {
+    try {
+      const root = await canonicalDirectory(workspace)
+      const html = (await safePreviewFile(root, '/dist/index.html', 64 * 1024)).bytes.toString('utf8')
+      previewReady = true
+      if (!gameName) {
+        gameName = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1]
+          ?.replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 160) || ''
+      }
+    } catch {}
+  }
   const index = String(run?.lastValidation?.index || '')
   if (!gameName && workspace && (index === 'index.html' || index === 'dist/index.html')) {
     try {
@@ -198,6 +235,8 @@ async function runDisplayMetadata(run: OrbitRun): Promise<Record<string, any>> {
     plan,
     failureCategory: recovery.failureCategory,
     recoveryDisposition: recovery.recoveryDisposition,
+    previewReady,
+    previewIssue: previewReady ? null : 'A validated dist/index.html build is required for Preview.',
     gameName,
     folderName,
     displayName: gameName || folderName || run.id,
@@ -336,15 +375,21 @@ export class WebCliServer {
     if (request.method === 'GET' && url.pathname === '/api/access/status') {
       const auth = { ...(await this.auth.status()), checked: true }
       let managedModel = ORBIT_MANAGED_DEFAULT_MODEL
+      let orbitModels: Array<{ id: string; label: string; vision: boolean }> = []
       if (auth.signedIn && typeof this.apiFactory === 'function') {
         try {
           const api = this.apiFactory('cli_gui')
-          if (typeof api?.models === 'function') managedModel = managedOrbitModelFromCatalog(await api.models())
+          if (typeof api?.models === 'function') {
+            const catalog = await api.models()
+            managedModel = managedOrbitModelFromCatalog(catalog)
+            orbitModels = orbitCatalogView(catalog)
+          }
         } catch {}
       }
       return send(response, 200, {
         auth,
         managedModel,
+        orbitModels,
         account: auth.signedIn && this.account?.status
           ? await this.account.status({ source: 'cli_gui', timeoutMs: 4_000 })
           : { signedIn: false, cadeBalance: null, cadeBalanceState: 'unavailable' },
@@ -423,6 +468,16 @@ export class WebCliServer {
       const provider = url.searchParams.get('provider')
       if (!provider || !CODING_PROVIDER_IDS.includes(provider as OrbitCodingProviderId)) throw new Error('A supported coding provider is required')
       return send(response, 200, { provider, models: await this.byok.models(provider as OrbitCodingProviderId) })
+    }
+    if (request.method === 'GET' && url.pathname === '/api/orbit/models') {
+      if (!(await this.auth.status()).signedIn) throw new Error('Sign in to Orbit before loading the model catalog')
+      const api = this.apiFactory('cli_gui')
+      if (typeof api?.models !== 'function') throw new Error('Orbit model catalog is unavailable')
+      const catalog = await api.models()
+      return send(response, 200, {
+        managedModel: managedOrbitModelFromCatalog(catalog),
+        models: orbitCatalogView(catalog),
+      })
     }
     if (request.method === 'POST' && url.pathname === '/api/provider') {
       const body = await bodyJson(request)
@@ -522,12 +577,17 @@ export class WebCliServer {
     if (request.method === 'POST' && preview) {
       const run = await this.store.load(preview[1]!)
       if (run.kind === 'asset3d' || run.kind === 'assetimage') return send(response, 409, { error: 'Standalone asset runs do not have a game preview' })
+      if (run.state !== 'completed' || run.lastValidation?.ok !== true) return send(response, 409, { error: 'Only a completed and validated build can be previewed' })
       const workspace = await canonicalDirectory(run.workspace)
-      const candidate = path.join(workspace, run.lastValidation?.index?.startsWith('dist/') ? 'dist' : '.')
-      const candidateStat = await fs.lstat(candidate)
+      const candidate = path.join(workspace, 'dist')
+      const candidateStat = await fs.lstat(candidate).catch(() => null)
+      if (!candidateStat) return send(response, 409, { error: 'Preview is unavailable because dist/index.html is missing. Resume the run and build the project first.' })
       const root = await fs.realpath(candidate)
       if (!candidateStat.isDirectory() || candidateStat.isSymbolicLink() || (root !== workspace && !isContained(workspace, root))) {
         return send(response, 409, { error: 'Validated preview directory is no longer safe' })
+      }
+      try { await safePreviewFile(workspace, '/dist/index.html', 64 * 1024 * 1024) } catch {
+        return send(response, 409, { error: 'Preview is unavailable because dist/index.html is missing or unsafe.' })
       }
       const key = randomBytes(18).toString('base64url')
       if (this.projects.size >= 200) {

@@ -1,136 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>Orbit Web CLI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0a0a'/%3E%3Cpath d='M18 32a14 14 0 1 0 28 0 14 14 0 1 0-28 0m7 0a7 7 0 1 1 14 0 7 7 0 1 1-14 0' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <div class="app">
-    <header>
-      <div>
-        <h1 id="thread-title">Orbit Web CLI</h1>
-        <div class="meta" id="thread-meta">Local workspace · checking access</div>
-      </div>
-      <div class="account-actions">
-        <span class="session-light" id="session-light" aria-hidden="true"></span>
-        <span id="session-label" aria-live="polite">Account not checked</span>
-        <button id="account-button" class="quiet" type="button" hidden>Account</button>
-        <button id="billing-button" class="quiet" type="button" hidden>Billing</button>
-        <button id="refresh-runs" class="icon-button" type="button" aria-label="Refresh projects" title="Refresh projects">↻</button>
-        <button id="auth-button" class="quiet" type="button" title="Reads one saved Orbit session from your operating-system credential vault">Check account</button>
-      </div>
-    </header>
-
-    <main>
-      <aside class="pane project-sidebar" aria-label="Local projects">
-        <div class="pane-head"><h2>Projects</h2></div>
-        <div class="scroll">
-          <button id="new-chat" class="new-chat" type="button">＋ New chat</button>
-          <button id="new-project" class="new-chat quiet" type="button">＋ New project</button>
-          <div id="projects" class="workspace-list"></div>
-        </div>
-      </aside>
-
-      <section class="pane console" aria-label="Orbit task">
-        <div id="thread" class="logs" aria-live="polite">
-          <div class="empty-thread">
-            <h2>Start by describing a game.</h2>
-            <p>Orbit will build it in your local workspace, validate it, and show the result here.</p>
-          </div>
-        </div>
-
-        <form id="run-form" class="composer">
-          <div class="composer-top">
-            <div class="composer-main">
-              <label for="prompt">Prompt</label>
-              <textarea id="prompt" required rows="3" placeholder="Describe a game to generate…"></textarea>
-            </div>
-            <div class="composer-actions">
-              <button id="launch" class="launch" type="submit">Generate</button>
-            </div>
-          </div>
-
-          <div class="composer-footer">
-            <label class="attach-button" for="references" title="Add reference images">＋</label>
-            <input id="references" type="file" multiple accept="image/png,image/jpeg,image/webp">
-            <output id="reference-list">No images</output>
-            <span class="composer-shortcut">⌘ ↵</span>
-          </div>
-
-          <details id="settings" class="settings">
-            <summary>Settings</summary>
-            <div class="settings-body">
-              <label class="field workspace-field"><span>Workspace</span><input id="workspace" required placeholder="/absolute/path/to/my-game" autocomplete="off"></label>
-              <div class="settings-grid">
-                <label class="field"><span>Model access</span><select id="mode"><option value="orbit">Orbit Cloud</option><option value="byok">Use my API key</option></select></label>
-                <label class="field"><span>Runtime</span><select id="runtime"><option value="auto">Agent decides</option><option value="html">HTML</option><option value="vanilla-ts">Vanilla TypeScript</option><option value="react-vite">React + Vite</option><option value="react-three-fiber">React Three Fiber</option><option value="three-vanilla">Three.js</option><option value="phaser">Phaser</option></select></label>
-                <label class="field byok-control"><span>Provider</span><select id="provider" aria-label="Coding provider"></select></label>
-                <label class="field"><span>Model</span><span class="model-picker"><input id="model" list="model-options" placeholder="Orbit Cloud model"><button id="browse-models" type="button">Browse</button></span><datalist id="model-options"></datalist></label>
-              </div>
-
-              <div class="toggle-grid">
-                <label><input id="generateImages" type="checkbox"><span>Generate images</span></label>
-                <label><input id="generate3d" type="checkbox"><span>Generate 3D</span></label>
-                <label><input id="allowShell" type="checkbox"><span>Allow project commands</span></label>
-                <label><input id="cloudLogs" type="checkbox"><span>Cloud diagnostics</span></label>
-              </div>
-
-              <section class="key-panel byok-control" aria-labelledby="keys-heading">
-                <div><strong id="keys-heading">Provider key</strong><span>Stored in your operating-system vault and checked only when you save or use this provider.</span></div>
-                <div class="key-row"><select id="key-provider" aria-label="Key provider"></select><input id="api-key" type="password" placeholder="Paste API key" autocomplete="new-password"><button id="save-key" type="button">Save key</button></div>
-              </section>
-
-              <details class="advanced-tools">
-                <summary>Standalone asset tools</summary>
-                <div class="asset-tools">
-                  <section id="image-form" class="asset-form">
-                    <strong>Generate an image</strong>
-                    <textarea id="image-prompt" required rows="2" placeholder="A transparent neon checkpoint icon…"></textarea>
-                    <div><select id="image-aspect" aria-label="Image aspect ratio"><option value="1:1">1:1</option><option value="9:16">9:16</option><option value="16:9">16:9</option></select><input id="image-output" value="assets/images/generated.png" aria-label="Image output path"><button id="generate-image-asset" type="button">Generate</button></div>
-                  </section>
-                  <section id="asset-form" class="asset-form">
-                    <strong>Generate a GLB model</strong>
-                    <textarea id="asset-prompt" required rows="2" placeholder="A stylized low-poly spacecraft…"></textarea>
-                    <div><select id="asset-mode"><option value="orbit">Orbit Cloud</option><option value="byok">Replicate key</option></select><input id="asset-output" value="assets/models/generated.glb" aria-label="3D output path"><button id="generate-3d-asset" type="button">Generate</button></div>
-                  </section>
-                </div>
-              </details>
-            </div>
-          </details>
-        </form>
-      </section>
-
-      <section class="pane preview-shell" aria-labelledby="preview-heading">
-        <div class="preview-toolbar">
-          <div><strong id="preview-heading">Preview</strong><span id="preview-state">Select a completed project</span></div>
-          <div class="preview-actions" role="group" aria-label="Preview controls">
-            <button type="button" data-preview-ratio="phone" class="active" aria-label="Phone preview" title="Phone preview">▯</button>
-            <button type="button" data-preview-ratio="4:3" aria-label="4:3 preview" title="4:3 preview">4:3</button>
-            <button type="button" data-preview-ratio="pc" aria-label="PC preview" title="PC preview">▰</button>
-            <button id="refresh-preview" type="button" aria-label="Refresh preview" title="Refresh preview">↻</button>
-            <button id="open-preview" type="button" aria-label="Open preview in a browser tab" title="Open preview in a browser tab">↗</button>
-          </div>
-        </div>
-        <div id="preview-stage" class="preview-host" data-ratio="phone">
-          <div id="preview-empty" class="empty-preview">No preview selected</div>
-          <iframe id="preview" title="Isolated game preview" sandbox="allow-scripts allow-pointer-lock allow-same-origin" referrerpolicy="no-referrer"></iframe>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <div id="status" class="toast" role="status">Ready</div>
-
-  <dialog id="publish-dialog">
-    <form method="dialog">
-      <p>Explicit network action</p>
-      <h2>Publish this game?</h2>
-      <span>Orbit will upload the validated build and sanitized source under your signed-in account. Local generation and preview never publish automatically.</span>
-      <div><button value="cancel" class="quiet">Cancel</button><button id="confirm-publish" value="confirm">Publish</button></div>
-    </form>
-  </dialog>
+  <div id="root"></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
