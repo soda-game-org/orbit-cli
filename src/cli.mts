@@ -13,6 +13,7 @@ import type { OrbitProviderId } from '@soda_game/orbit-provider-core'
 import { collectCreateArguments, runWelcomeMenu, welcomeActionArguments } from './welcome.mjs'
 import { runInteractiveSession } from './session.mjs'
 import { enforceLatestCli, shouldSkipCliUpdate } from './update-check.mjs'
+import { exportPlatformMiniGameSource, normalizeMiniGameExportPlatform } from './wechat-export.mjs'
 
 type FlagValue = true | string | Array<true | string>
 type Flags = Record<string, FlagValue>
@@ -49,6 +50,8 @@ Usage:
   orbit runs relocate <run-id> --workspace <new-absolute-path>
   orbit capabilities
   orbit publish <run-id> [--title <text>] [--locale en|zh] [--yes]
+  orbit export wechat|douyin|tiktok <run-id> [--output <path>]
+  orbit export wechat|douyin|tiktok --workspace <path> [--output <path>]
   orbit logs enable|disable|flush
   orbit web [--no-open]
   orbit doctor
@@ -319,8 +322,29 @@ export async function main(argv: string[] = process.argv.slice(2), dependencies:
       { capability: 'gis', status: 'unsupported', detail: 'Intentionally unavailable in CLI and Web CLI' },
       { capability: '3d_models', status: 'supported', detail: 'Orbit OAuth Worker or user Replicate key' },
       { capability: 'publish', status: 'explicit_only', detail: 'OAuth and confirmation required' },
+      { capability: 'mini_game_source_export', status: 'supported', detail: 'WeChat, Douyin and TikTok native-runtime source projects with agent adaptation contracts' },
       { capability: 'cloud_logs', status: 'opt_in', detail: 'Structured metadata only; source is recorded' },
     ])
+    return 0
+  }
+  if (command === 'export') {
+    const platform = normalizeMiniGameExportPlatform(action)
+    let exportWorkspace = typeof flags.workspace === 'string' ? path.resolve(flags.workspace) : ''
+    let title = typeof flags.title === 'string' ? flags.title : ''
+    if (target) {
+      const run = await app.store.load(target)
+      if (run.state !== 'completed' || !run.lastValidation?.ok) throw new Error('Only a completed and validated game run can be exported')
+      exportWorkspace = run.workspace
+      title ||= run.result?.title || run.lastValidation?.title || ''
+    }
+    if (!exportWorkspace) throw new Error(`Usage: orbit export ${platform} <run-id> [--output <path>]`)
+    const result = await exportPlatformMiniGameSource({
+      platform,
+      workspace: exportWorkspace,
+      outputDirectory: typeof flags.output === 'string' ? path.resolve(flags.output) : undefined,
+      title,
+    })
+    console.log(JSON.stringify(result, null, 2))
     return 0
   }
   if (command === 'publish') {
