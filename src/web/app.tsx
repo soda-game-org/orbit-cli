@@ -32,6 +32,7 @@ import {
   Square,
   Tablet,
   Upload,
+  PackageOpen,
   WandSparkles,
   X,
 } from 'lucide-react'
@@ -426,6 +427,17 @@ function App() {
     setPublishRun(null); notify(`Published ${result.game?.title || result.game?.id}`)
   }
 
+  const exportMiniGame = async (run: AnyRecord, platform: 'wechat' | 'douyin' | 'tiktok') => {
+    const result = await api(`/api/runs/${run.id}/export-mini-game`, {
+      method: 'POST',
+      body: JSON.stringify({ platform }),
+    })
+    const label = platform === 'wechat' ? 'WeChat' : platform === 'douyin' ? 'Douyin' : 'TikTok'
+    notify(result.mode === 'native'
+      ? `${label} source exported to ${result.outputDirectory}`
+      : `${label} agent-assisted source exported to ${result.outputDirectory}`)
+  }
+
   const authLabel = !state.auth.checked ? 'Check account' : state.auth.signedIn ? state.auth.email || 'Orbit account' : 'Sign in'
   const selectedTitle = activeRun?.gameName || activeRun?.folderName || (selectedWorkspace ? 'New task' : 'New game')
   const modelOptions = mode === 'orbit'
@@ -476,7 +488,7 @@ function App() {
 
     <main className="conversation">
       <div className="transcript">
-        {!activeRuns.length ? <div className="empty-conversation"><span className="empty-orbit"><WandSparkles size={26}/></span><h2>{selectedWorkspace ? 'What should Orbit change?' : 'Build a game from an idea'}</h2><p>{selectedWorkspace ? 'This is a fresh task in the same game workspace. Its context stays separate from earlier tasks.' : 'Choose a local workspace, describe the game, and Orbit will build and validate a preview-ready bundle.'}</p></div> : activeRuns.map((run) => <RunTurn key={run.id} run={run} onPreview={() => openPreview(run.id).catch((error) => notify(errorMessage(error), true))} onResume={(unsafe) => resumeRun(run, unsafe).catch((error) => notify(errorMessage(error), true))} onPublish={() => setPublishRun(run)}/>) }
+        {!activeRuns.length ? <div className="empty-conversation"><span className="empty-orbit"><WandSparkles size={26}/></span><h2>{selectedWorkspace ? 'What should Orbit change?' : 'Build a game from an idea'}</h2><p>{selectedWorkspace ? 'This is a fresh task in the same game workspace. Its context stays separate from earlier tasks.' : 'Choose a local workspace, describe the game, and Orbit will build and validate a preview-ready bundle.'}</p></div> : activeRuns.map((run) => <RunTurn key={run.id} run={run} onPreview={() => openPreview(run.id).catch((error) => notify(errorMessage(error), true))} onResume={(unsafe) => resumeRun(run, unsafe).catch((error) => notify(errorMessage(error), true))} onPublish={() => setPublishRun(run)} onExportMiniGame={(platform) => exportMiniGame(run, platform).catch((error) => notify(errorMessage(error), true))}/>) }
         {progress && <div className="live-progress"><Spinner size="sm"/><span>{progress}</span></div>}
       </div>
 
@@ -513,10 +525,10 @@ function App() {
   </div>
 }
 
-function RunTurn({ run, onPreview, onResume, onPublish }: { run: AnyRecord; onPreview: () => void; onResume: (unsafe: boolean) => void; onPublish: () => void }) {
+function RunTurn({ run, onPreview, onResume, onPublish, onExportMiniGame }: { run: AnyRecord; onPreview: () => void; onResume: (unsafe: boolean) => void; onPublish: () => void; onExportMiniGame: (platform: 'wechat' | 'douyin' | 'tiktok') => void }) {
   const trace = [run.plan?.todos?.length ? `Plan\n${run.plan.todos.map((todo: AnyRecord) => `${todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '·' : '○'} ${todo.title || todo.id}`).join('\n')}` : '', run.lastValidation ? `Validation\n${JSON.stringify(run.lastValidation, null, 2)}` : ''].filter(Boolean).join('\n\n')
   const completed = run.state === 'completed'
-  return <article className="turn"><div className="user-message">{run.prompt}</div><div className="result-card"><header><div><strong>{run.result?.title || run.gameName || run.folderName || 'Orbit result'}</strong><small>{run.mode === 'orbit' ? 'Orbit Cloud' : run.provider} · {run.model || 'automatic model'} · {run.runtime || 'auto'}</small></div><span className={`run-state ${run.state}`}>{runStateLabel(run.state)}</span></header><div className="result-body"><p>{run.result?.summary || (completed ? run.previewReady ? 'The validated build is ready to preview.' : run.previewIssue : run.lastError?.message || 'The checkpoint is saved and can be continued.')}</p><div className="run-actions">{completed && run.previewReady && <Button size="sm" onPress={onPreview}><Play size={13}/>Preview</Button>}{completed && run.previewReady && <Button size="sm" variant="ghost" onPress={onPublish}><Upload size={13}/>Publish</Button>}{['paused', 'interrupted', 'queued'].includes(run.state) && <Button size="sm" onPress={() => onResume(false)}><RefreshCw size={13}/>Resume</Button>}{run.unsafeResumeRequired && <Button size="sm" variant="danger" onPress={() => onResume(true)}><ShieldCheck size={13}/>Confirm retry</Button>}</div>{trace && <Accordion className="trace"><Accordion.Item id={`trace-${run.id}`}><Accordion.Heading><Accordion.Trigger><span>Show work and validation</span><Accordion.Indicator><ChevronDown size={13}/></Accordion.Indicator></Accordion.Trigger></Accordion.Heading><Accordion.Panel><Accordion.Body><pre>{trace}</pre></Accordion.Body></Accordion.Panel></Accordion.Item></Accordion>}</div></div></article>
+  return <article className="turn"><div className="user-message">{run.prompt}</div><div className="result-card"><header><div><strong>{run.result?.title || run.gameName || run.folderName || 'Orbit result'}</strong><small>{run.mode === 'orbit' ? 'Orbit Cloud' : run.provider} · {run.model || 'automatic model'} · {run.runtime || 'auto'}</small></div><span className={`run-state ${run.state}`}>{runStateLabel(run.state)}</span></header><div className="result-body"><p>{run.result?.summary || (completed ? run.previewReady ? 'The validated build is ready to preview.' : run.previewIssue : run.lastError?.message || 'The checkpoint is saved and can be continued.')}</p><div className="run-actions">{completed && run.previewReady && <Button size="sm" onPress={onPreview}><Play size={13}/>Preview</Button>}{completed && run.previewReady && <Button size="sm" variant="ghost" onPress={onPublish}><Upload size={13}/>Publish</Button>}{completed && run.previewReady && (['wechat', 'douyin', 'tiktok'] as const).map((platform) => <Button key={platform} size="sm" variant="ghost" onPress={() => onExportMiniGame(platform)}><PackageOpen size={13}/>{platform === 'wechat' ? 'WeChat' : platform === 'douyin' ? 'Douyin' : 'TikTok'}</Button>)}{['paused', 'interrupted', 'queued'].includes(run.state) && <Button size="sm" onPress={() => onResume(false)}><RefreshCw size={13}/>Resume</Button>}{run.unsafeResumeRequired && <Button size="sm" variant="danger" onPress={() => onResume(true)}><ShieldCheck size={13}/>Confirm retry</Button>}</div>{trace && <Accordion className="trace"><Accordion.Item id={`trace-${run.id}`}><Accordion.Heading><Accordion.Trigger><span>Show work and validation</span><Accordion.Indicator><ChevronDown size={13}/></Accordion.Indicator></Accordion.Trigger></Accordion.Heading><Accordion.Panel><Accordion.Body><pre>{trace}</pre></Accordion.Body></Accordion.Panel></Accordion.Item></Accordion>}</div></div></article>
 }
 
 function SettingsModal(props: AnyRecord) {

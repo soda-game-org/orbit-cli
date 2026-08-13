@@ -12,6 +12,11 @@ import { ORBIT_MANAGED_DEFAULT_MODEL, managedOrbitModelFromCatalog } from '../mo
 import { withRecoveryView } from '../recovery-view.mjs'
 import type { OrbitRun } from '../types.mjs'
 import type { OrbitCodingProviderId } from '@soda_game/orbit-provider-core'
+import {
+  exportPlatformMiniGameSource,
+  exportWechatMiniGameSource,
+  normalizeMiniGameExportPlatform,
+} from '../wechat-export.mjs'
 
 const HOST = '127.0.0.1'
 const runRoute = (suffix: string) => new RegExp(`^/api/runs/(${ORBIT_RUN_ID_PATTERN})/${suffix}$`)
@@ -605,6 +610,32 @@ export class WebCliServer {
       if (run.state !== 'completed' || !run.lastValidation?.ok) return send(response, 409, { error: 'Only completed and validated runs can be published' })
       const api = this.apiFactory('cli_gui')
       const result = await this.publishFactory(api).publish({ workspace: run.workspace, title: body.title, prompt: run.prompt, runtime: run.runtime, locale: body.locale, gameId: body.gameId })
+      return send(response, 200, result)
+    }
+    const exportWechat = runRoute('export-wechat').exec(url.pathname)
+    if (request.method === 'POST' && exportWechat) {
+      const body = await bodyJson(request)
+      const run = await this.store.load(exportWechat[1]!)
+      if (run.state !== 'completed' || !run.lastValidation?.ok) return send(response, 409, { error: 'Only completed and validated runs can be exported' })
+      const result = await exportWechatMiniGameSource({
+        workspace: run.workspace,
+        outputDirectory: typeof body.outputDirectory === 'string' && body.outputDirectory.trim() ? body.outputDirectory : undefined,
+        title: run.result?.title || run.lastValidation?.title || '',
+      })
+      return send(response, 200, result)
+    }
+    const exportMiniGame = runRoute('export-mini-game').exec(url.pathname)
+    if (request.method === 'POST' && exportMiniGame) {
+      const body = await bodyJson(request)
+      const platform = normalizeMiniGameExportPlatform(body.platform)
+      const run = await this.store.load(exportMiniGame[1]!)
+      if (run.state !== 'completed' || !run.lastValidation?.ok) return send(response, 409, { error: 'Only completed and validated runs can be exported' })
+      const result = await exportPlatformMiniGameSource({
+        platform,
+        workspace: run.workspace,
+        outputDirectory: typeof body.outputDirectory === 'string' && body.outputDirectory.trim() ? body.outputDirectory : undefined,
+        title: run.result?.title || run.lastValidation?.title || '',
+      })
       return send(response, 200, result)
     }
     return send(response, 404, { error: 'Not found' })
