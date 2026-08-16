@@ -536,11 +536,32 @@ export class RunStore {
   }
 
   async listThreads(workspace?: string): Promise<import('./conversation-store.mjs').OrbitCliThreadSnapshot[]> {
-    return this.conversations.listThreadSnapshots(await this.list(), workspace)
+    return this.listThreadsFromRuns(await this.list(), workspace)
+  }
+
+  async listThreadsFromRuns(runs: OrbitRun[], workspace?: string): Promise<import('./conversation-store.mjs').OrbitCliThreadSnapshot[]> {
+    return this.conversations.listThreadSnapshots(runs, workspace)
+  }
+
+  async thread(threadId: string): Promise<import('@soda_game/orbit-agent-core').OrbitAgentThread | null> {
+    return this.conversations.thread(threadId)
+  }
+
+  async projectHasRuns(projectId: string): Promise<boolean> {
+    return (await this.conversations.threads()).some((thread) => (
+      thread.projectId === projectId
+      && thread.turns.some((turn) => isOrbitRunId(turn.metadata?.hostRunId))
+    ))
   }
 
   async latestRunForThread(threadId: string): Promise<OrbitRun | null> {
-    return this.conversations.latestRunForThread(await this.list(), threadId)
+    const thread = await this.conversations.thread(threadId)
+    if (!thread) return null
+    for (const turn of [...thread.turns].reverse()) {
+      const runId = turn.metadata?.hostRunId
+      if (isOrbitRunId(runId)) return this.load(runId)
+    }
+    return null
   }
 
   async linkRunToTurn(input: {

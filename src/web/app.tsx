@@ -42,6 +42,7 @@ import {
 } from 'lucide-react'
 import { ORBIT_WORDMARK_SRC } from './orbit-brand.js'
 import './app.css'
+import { mergeRunDelta } from './state.mjs'
 
 type AnyRecord = Record<string, any>
 type OrbitModel = { id: string; label: string; vision?: boolean }
@@ -144,6 +145,10 @@ function App() {
     setToast({ message, error })
     if (toastTimer.current) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast(null), error ? 8_000 : 3_600)
+  }, [])
+
+  const applyRunDelta = useCallback((delta: AnyRecord) => {
+    setState((current) => mergeRunDelta(current, delta))
   }, [])
 
   const refresh = useCallback(async (preserveAccess = true) => {
@@ -376,14 +381,14 @@ function App() {
         if (!line.trim()) continue
         const message = JSON.parse(line)
         if (message.type === 'progress') setProgress(progressLabel(message.event))
-        else if (message.type === 'complete') completed = message.run
+        else if (message.type === 'complete') completed = message
         else if (message.type === 'error') throw new Error(message.error || 'The local run failed')
       }
       if (done) break
     }
     if (buffer.trim()) {
       const message = JSON.parse(buffer)
-      if (message.type === 'complete') completed = message.run
+      if (message.type === 'complete') completed = message
       if (message.type === 'error') throw new Error(message.error || 'The local run failed')
     }
     if (!completed) throw new Error('The local run ended without a final checkpoint')
@@ -399,12 +404,12 @@ function App() {
     setRunning(true); setProgress('Starting the local agent')
     try {
       await api('/api/config', { method: 'POST', body: JSON.stringify({ mode, provider, model, runtime, cloudLogs }) })
-      const run = await streamRun({ prompt: prompt.trim(), workspace: workspace.trim(), operation: projects.some((project) => project.workspace === workspace.trim()) ? 'edit' : 'create', mode, provider, model, runtime, generateImages, generate3d, cloudLogs, allowShell, threadId: selectedThreadId || undefined, files: await filePayload() })
+      const delta = await streamRun({ prompt: prompt.trim(), workspace: workspace.trim(), operation: projects.some((project) => project.workspace === workspace.trim()) ? 'edit' : 'create', mode, provider, model, runtime, generateImages, generate3d, cloudLogs, allowShell, threadId: selectedThreadId || undefined, files: await filePayload() })
+      const run = delta.run
+      applyRunDelta(delta)
       setPrompt(''); setReferences([])
-      const refreshed = await refresh()
       if (requestGeneration === navigation.current) {
-        const runThread = refreshed.threads?.find((thread: AnyRecord) => Array.isArray(thread.runIds) && thread.runIds.includes(run.id))
-        setSelectedWorkspace(run.workspace || workspace.trim()); setWorkspace(run.workspace || workspace.trim()); setSelectedThreadId(runThread?.id || run.threadId || ''); setSelectedRunId(run.id)
+        setSelectedWorkspace(run.workspace || workspace.trim()); setWorkspace(run.workspace || workspace.trim()); setSelectedThreadId(delta.thread?.id || run.threadId || ''); setSelectedRunId(run.id)
       }
       notify(run.state === 'completed' ? 'Game ready' : `Run ${run.state}`)
       if (run.state === 'completed') window.setTimeout(() => openPreview(run.id, false).catch((error) => notify(errorMessage(error), true)), 0)
@@ -415,7 +420,7 @@ function App() {
     setRunning(true); setProgress(`Resuming ${shortId(run.id, 'run_')}`)
     try {
       const body = await api(`/api/runs/${run.id}/resume`, { method: 'POST', body: JSON.stringify({ retryUnsafe, allowShell }) })
-      await refresh(); setSelectedRunId(body.run.id); notify(`Run ${body.run.state}`)
+      applyRunDelta(body); setSelectedRunId(body.run.id); notify(`Run ${body.run.state}`)
       if (body.run.state === 'completed') await openPreview(body.run.id, false)
     } finally { setRunning(false); setProgress('') }
   }
@@ -443,7 +448,7 @@ function App() {
     if (!imagePrompt.trim()) return notify('Describe the image to generate', true)
     await ensureOrbitAuth(); notify('Generating image…')
     const body = await api('/api/assets/image', { method: 'POST', body: JSON.stringify({ workspace, prompt: imagePrompt.trim(), output: imageOutput, aspectRatio: imageAspect, cloudLogs }) })
-    notify(`Image run ${body.run.state}`); await refresh()
+    applyRunDelta(body); notify(`Image run ${body.run.state}`)
   }
 
   const generate3dAsset = async () => {
@@ -453,7 +458,7 @@ function App() {
     else if (!await checkProvider('replicate')) { setKeyProvider('replicate'); throw new Error('Add a Replicate key first') }
     notify('Generating 3D model…')
     const body = await api('/api/assets/3d', { method: 'POST', body: JSON.stringify({ workspace, prompt: assetPrompt.trim(), output: assetOutput, mode: assetMode, cloudLogs }) })
-    notify(`3D run ${body.run.state}`); await refresh()
+    applyRunDelta(body); notify(`3D run ${body.run.state}`)
   }
 
   const publish = async () => {

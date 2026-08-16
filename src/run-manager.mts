@@ -413,8 +413,8 @@ export class RunManager {
     if (mode === 'byok' && input.generate3d && !await this.credentials.get(providerCredentialAccount('replicate'))) {
       throw new Error('Configure a Replicate API key before enabling BYOK 3D generation')
     }
-    const projectHasGame = (await this.store.listThreads(workspace)).some((candidate: Dynamic) => Array.isArray(candidate.runIds) && candidate.runIds.length > 0)
     const thread = await this.store.ensureThread(workspace, input.threadId, String(input.prompt || 'New session'))
+    const projectHasGame = await this.store.projectHasRuns(thread.projectId)
     const run = await this.store.withThreadLease(thread.id, async () => {
       const previous = await this.store.latestRunForThread(thread.id)
       if (previous && ['queued', 'running', 'recovering', 'interrupted', 'paused'].includes(previous.state)) {
