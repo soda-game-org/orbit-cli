@@ -233,6 +233,8 @@ async function runDisplayMetadata(run: OrbitRun): Promise<Record<string, any>> {
     finishedAt: run.finishedAt,
     sequence: run.sequence,
     iteration: run.iteration,
+    threadId: typeof run.threadId === 'string' ? run.threadId : undefined,
+    turnId: typeof run.turnId === 'string' ? run.turnId : undefined,
     unsafeResumeRequired: run.unsafeResumeRequired === true,
     lastError: run.lastError ? { code: String(run.lastError.code || ''), message: String(run.lastError.message || '') } : null,
     result,
@@ -365,6 +367,46 @@ export class WebCliServer {
     }
   }
 
+  async #runDelta(run: OrbitRun, fallback: { threadId?: string; workspace?: string; kind?: string } = {}): Promise<Record<string, any>> {
+    const normalizedRun = {
+      ...run,
+      ...(run.workspace ? {} : fallback.workspace ? { workspace: fallback.workspace } : {}),
+      ...(run.kind ? {} : fallback.kind ? { kind: fallback.kind } : {}),
+    } as OrbitRun
+    const displayedRun = await runDisplayMetadata(normalizedRun)
+    if (normalizedRun.kind === 'asset3d' || normalizedRun.kind === 'assetimage') {
+      const workspace = String(normalizedRun.workspace || '')
+      return {
+        run: displayedRun,
+        thread: threadDisplayMetadata({
+          id: `asset_${sha256(workspace).slice(0, 32)}`,
+          projectId: '',
+          title: 'Standalone assets',
+          workspace,
+          runIds: [normalizedRun.id],
+          latestRunId: normalizedRun.id,
+          turns: [normalizedRun],
+          createdAt: normalizedRun.createdAt || '',
+          updatedAt: normalizedRun.updatedAt || '',
+          kind: 'assets',
+        }),
+      }
+    }
+    const threadId = String(normalizedRun.threadId || fallback.threadId || '')
+    const thread = threadId ? await this.store.thread(threadId) : null
+    return {
+      run: displayedRun,
+      thread: thread
+        ? threadDisplayMetadata({
+            ...thread,
+            workspace: normalizedRun.workspace,
+            runIds: [normalizedRun.id],
+            latestRunId: normalizedRun.id,
+          })
+        : null,
+    }
+  }
+
   async #mainRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url || '/', this.mainOrigin)
     if (request.headers.host !== this.mainHost) return send(response, 400, { error: 'Invalid host' })
@@ -410,7 +452,7 @@ export class WebCliServer {
         configured: null,
       })))
       const storedRuns = await this.store.list()
-      const threads = (await this.store.listThreads()).map(threadDisplayMetadata)
+      const threads = (await this.store.listThreadsFromRuns(storedRuns)).map(threadDisplayMetadata)
       const assetGroups = new Map<string, OrbitRun[]>()
       for (const run of storedRuns.filter((candidate: OrbitRun) => candidate.kind === 'asset3d' || candidate.kind === 'assetimage')) {
         const group = assetGroups.get(run.workspace) || []
@@ -514,7 +556,7 @@ export class WebCliServer {
           onReferencesIngested: cleanupUploadOnce,
           onProgress: (event: unknown) => write({ type: 'progress', event }),
         })
-        write({ type: 'complete', run: await runDisplayMetadata(run) })
+        write({ type: 'complete', ...await this.#runDelta(run, { threadId: body.threadId, workspace: body.workspace }) })
       } catch (error) {
         write({ type: 'error', error: publicError(error) })
       } finally {
@@ -541,7 +583,7 @@ export class WebCliServer {
           allowShell: body.allowShell === true, referenceImages: upload.paths, threadId: body.threadId,
           onReferencesIngested: cleanupUploadOnce,
         })
-        return send(response, 200, { run: await runDisplayMetadata(run) })
+        return send(response, 200, await this.#runDelta(run, { threadId: body.threadId, workspace: body.workspace }))
       } finally { await cleanupUploadOnce() }
     }
     if (request.method === 'POST' && url.pathname === '/api/assets/image') {
@@ -550,7 +592,7 @@ export class WebCliServer {
         source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
         output: body.output, aspectRatio: body.aspectRatio, cloudLogs: body.cloudLogs === true,
       })
-      return send(response, 200, { run: await runDisplayMetadata(run) })
+      return send(response, 200, await this.#runDelta(run, { workspace: body.workspace, kind: 'assetimage' }))
     }
     if (request.method === 'POST' && url.pathname === '/api/assets/3d') {
       const body = await bodyJson(request)
@@ -558,7 +600,7 @@ export class WebCliServer {
         source: 'cli_gui', prompt: body.prompt, workspace: body.workspace,
         mode: body.mode, output: body.output, cloudLogs: body.cloudLogs === true,
       })
-      return send(response, 200, { run: await runDisplayMetadata(run) })
+      return send(response, 200, await this.#runDelta(run, { workspace: body.workspace, kind: 'asset3d' }))
     }
     const resume = runRoute('resume').exec(url.pathname)
     if (request.method === 'POST' && resume) {
@@ -570,7 +612,7 @@ export class WebCliServer {
         : stored.kind === 'assetimage'
           ? await this.assetImage.resume(runId, { retryUnsafe: body.retryUnsafe === true })
           : await this.manager.resume(runId, { allowShell: body.allowShell === true, retryUnsafe: body.retryUnsafe === true })
-      return send(response, 200, { run: await runDisplayMetadata(run) })
+      return send(response, 200, await this.#runDelta(run))
     }
     const relocate = runRoute('relocate').exec(url.pathname)
     if (request.method === 'POST' && relocate) {

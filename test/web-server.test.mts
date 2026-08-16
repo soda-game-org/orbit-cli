@@ -26,6 +26,9 @@ test('protects management APIs and isolates preview content on another origin', 
   const run = await store.create({ workspace, prompt: 'test', mode: 'orbit' })
   run.lastValidation = { ok: true, index: 'dist/index.html' }
   await store.transition(run, 'completed')
+  const originalList = store.list.bind(store)
+  let runListCalls = 0
+  Object.defineProperty(store, 'list', { value: async () => { runListCalls += 1; return originalList() } })
   const config = { get: async () => ({ mode: 'orbit' }), update: async (value) => value }
   let authReads = 0
   const auth = { status: async () => { authReads += 1; return { signedIn: false } }, login: async () => ({}), logout: async () => {} }
@@ -78,17 +81,31 @@ test('protects management APIs and isolates preview content on another origin', 
   const appSource = await fetch(`${started.origin}/app.js`).then((response) => response.text())
   assert.match(appSource, /\/api\/orbit\/models/)
   assert.match(appSource, /Start a new game/)
-  assert.match(appSource, /Same game, fresh context/)
+  assert.match(appSource, /New task in this game/)
+  assert.match(appSource, /Refresh preview/)
   assert.match(appSource, /Validated builds only/)
+  assert.match(appSource, /Show navigation sidebar/)
+  assert.match(appSource, /Orbit account/)
+  assert.match(appSource, /Keep local games on this computer/)
+  assert.match(appSource, /Dismiss notification/)
+  assert.match(appSource, /This run stopped before completion/)
+  assert.match(appSource, /Agent-assisted platform source/)
   assert.match(appSource, /allow-scripts allow-pointer-lock allow-same-origin/)
   const appCss = await fetch(`${started.origin}/app.css`).then((response) => response.text())
   assert.match(appCss, /\.orbit-shell/)
+  assert.match(appCss, /\.sidebar-collapsed/)
+  assert.match(appCss, /\.account-popover/)
+  assert.doesNotMatch(appCss, /\.topbar-actions/)
+  assert.match(appCss, /\.run-error-details/)
+  assert.match(appCss, /\.export-menu/)
   assert.doesNotMatch(appCss, /@import\s+["']@heroui/)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`)).status, 403)
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: { ...headers, Origin: 'http://evil.invalid' } })).status, 403)
+  const listCallsBeforeBootstrap = runListCalls
   const bootstrapResponse = await fetch(`${started.origin}/api/bootstrap`, { headers })
   assert.equal(bootstrapResponse.status, 200)
   const bootstrap = await bootstrapResponse.json()
+  assert.equal(runListCalls, listCallsBeforeBootstrap + 1)
   assert.deepEqual(bootstrap.managedModel, { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' })
   assert.equal(bootstrap.providers.find((provider) => provider.id === 'zhipu-cn').label, 'Zhipu BigModel (China)')
   assert.equal(bootstrap.auth.checked, false)
@@ -108,7 +125,9 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.equal(Object.hasOwn(persistedCheckpoint, 'failureCategory'), false)
   assert.equal(Object.hasOwn(persistedCheckpoint, 'recoveryDisposition'), false)
   const { Origin: _origin, ...browserGetHeaders } = headers
+  const listCallsBeforeGetBootstrap = runListCalls
   assert.equal((await fetch(`${started.origin}/api/bootstrap`, { headers: browserGetHeaders })).status, 200)
+  assert.equal(runListCalls, listCallsBeforeGetBootstrap + 1)
   assert.equal(authReads, 0)
   assert.deepEqual(credentialReads, [])
   const access = await fetch(`${started.origin}/api/access/status`, { headers }).then((response) => response.json())
@@ -151,6 +170,8 @@ test('protects management APIs and isolates preview content on another origin', 
   assert.deepEqual(streamMessages.map((message) => message.type), ['progress', 'complete'])
   assert.equal(streamMessages[0].event.toolName, 'write_file')
   assert.equal(streamMessages[1].run.recoveryDisposition, 'terminal')
+  assert.equal(streamMessages[1].thread.id, createdThread.id)
+  assert.deepEqual(streamMessages[1].thread.runIds, [streamMessages[1].run.id])
   assert.equal(streamedInput.source, 'cli_gui')
   assert.equal(streamedInput.threadId, createdThread.id)
   assert.equal(streamedInput.operation, 'edit')
@@ -163,6 +184,8 @@ test('protects management APIs and isolates preview content on another origin', 
   const imageBody = await imageResponse.json()
   assert.equal(imageBody.run.failureCategory, 'none')
   assert.equal(imageBody.run.recoveryDisposition, 'terminal')
+  assert.equal(imageBody.thread.kind, 'assets')
+  assert.deepEqual(imageBody.thread.runIds, [imageBody.run.id])
   assert.equal(imageInput.source, 'cli_gui')
   assert.equal(imageInput.output, 'assets/images/icon.png')
 

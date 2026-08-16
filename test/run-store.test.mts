@@ -336,6 +336,12 @@ test('one canonical project supports multiple threads, turns, run links, and att
   assert.deepEqual(threads.find((thread) => thread.id === left.id)?.runIds, [run.id])
   assert.deepEqual(threads.find((thread) => thread.id === right.id)?.runIds, [])
   assert.equal(first.turnId, (await store.linkForRun(run.id))?.turnId)
+  const originalList = store.list.bind(store)
+  Object.defineProperty(store, 'list', { configurable: true, value: async () => { throw new Error('full run scan was used') } })
+  assert.equal(await store.projectHasRuns(left.projectId), true)
+  assert.equal((await store.latestRunForThread(left.id))?.id, run.id)
+  assert.equal(await store.latestRunForThread(right.id), null)
+  Object.defineProperty(store, 'list', { configurable: true, value: originalList })
 })
 
 test('repairs a crash between canonical turn persistence and run-link persistence idempotently', async (t) => {
