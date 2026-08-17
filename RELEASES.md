@@ -1,5 +1,24 @@
 # Release integrity
 
+## v0.2.5
+
+This patch adds agent-assisted source exports for WeChat, Douyin, and TikTok
+Mini Games while keeping the validated browser build and local workspace as the
+source of truth. Native projects are preserved when they already match the
+target platform; browser projects are exported as explicit adaptation projects
+instead of being presented as native builds.
+
+The local Web CLI now uses the Orbit wordmark and a single icon vocabulary,
+keeps the navigation collapse control inside the workspace header, and moves
+Account, Billing, and Sign out into one upward account menu. Mini Game export
+targets live under one Export menu, while completed and failed Runs keep their
+primary result compact and expose validation or error details on demand.
+
+Run, resume, image, and 3D operations now merge canonical Run and Thread deltas
+into the current client state instead of reloading all Web CLI data. Bootstrap
+also reuses its initial Run scan when building Thread metadata, reducing local
+checkpoint I/O without changing recovery or history semantics.
+
 ## v0.2.4
 
 This release rebuilds the local Web CLI as a polished React and HeroUI
