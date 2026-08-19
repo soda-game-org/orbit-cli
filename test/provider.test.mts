@@ -3,7 +3,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { CODING_PROVIDER_IDS, PROVIDERS } from '../src/constants.mjs'
 import { providerCredentialAccount } from '../src/credentials.mjs'
-import { ByokProvider } from '../src/provider.mjs'
+import { ByokProvider, publicGenericSkill } from '../src/provider.mjs'
 import {
   DEFAULT_MODEL_OUTPUT_TOKENS,
   MAX_PROVIDER_OUTPUT_TOKENS,
@@ -24,6 +24,14 @@ class MemoryCredentials {
   constructor(entries = {}) { this.entries = new Map(Object.entries(entries)) }
   async get(account) { return this.entries.get(account) || null }
 }
+
+test('generic HTML skill resolves from source and built package layouts', async () => {
+  const sourceSkill = await publicGenericSkill()
+  const builtProvider = await import('../dist/src/provider.mjs')
+  const builtSkill = await builtProvider.publicGenericSkill()
+  assert.match(sourceSkill, /Generic HTML game guidance/)
+  assert.equal(builtSkill, sourceSkill)
+})
 
 test('provider profiles keep regional services and credentials separate', () => {
   assert.deepEqual(CODING_PROVIDER_IDS, [
