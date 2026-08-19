@@ -9,6 +9,7 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
+  ChevronUp,
   CircleAlert,
   CircleUserRound,
   Coins,
@@ -19,23 +20,27 @@ import {
   ImagePlus,
   KeyRound,
   LoaderCircle,
+  LogOut,
   MessageSquarePlus,
   Monitor,
   Play,
   RefreshCw,
-  RotateCcw,
   Send,
   Settings2,
   ShieldCheck,
   Smartphone,
   Sparkles,
+  SquarePen,
   Square,
   Tablet,
   Upload,
   PackageOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   WandSparkles,
   X,
 } from 'lucide-react'
+import { ORBIT_WORDMARK_SRC } from './orbit-brand.js'
 import './app.css'
 import { mergeRunDelta } from './state.mjs'
 
@@ -130,8 +135,10 @@ function App() {
   const [assetPrompt, setAssetPrompt] = useState('')
   const [assetMode, setAssetMode] = useState<'orbit' | 'byok'>('orbit')
   const [assetOutput, setAssetOutput] = useState('assets/models/generated.glb')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('orbit.cli.sidebar.collapsed') === '1')
   const navigation = useRef(0)
   const toastTimer = useRef<number | null>(null)
+  const accountMenuRef = useRef<HTMLDetailsElement | null>(null)
   const settingsAccessAttempted = useRef(false)
 
   const notify = useCallback((message: string, error = false) => {
@@ -179,6 +186,26 @@ function App() {
   useEffect(() => {
     refresh(false).catch((error) => notify(errorMessage(error), true))
     return () => { if (toastTimer.current) window.clearTimeout(toastTimer.current) }
+  }, [])
+
+  useEffect(() => {
+    const closeAccountMenu = (event: PointerEvent | KeyboardEvent) => {
+      const menu = accountMenuRef.current
+      if (!menu?.open) return
+      if (event instanceof KeyboardEvent && event.key === 'Escape') {
+        event.preventDefault()
+        menu.removeAttribute('open')
+        menu.querySelector<HTMLElement>('summary')?.focus()
+        return
+      }
+      if (event instanceof PointerEvent && event.target instanceof Node && !menu.contains(event.target)) menu.removeAttribute('open')
+    }
+    document.addEventListener('pointerdown', closeAccountMenu, true)
+    document.addEventListener('keydown', closeAccountMenu, true)
+    return () => {
+      document.removeEventListener('pointerdown', closeAccountMenu, true)
+      document.removeEventListener('keydown', closeAccountMenu, true)
+    }
   }, [])
 
   const threadRuns = useCallback((thread: AnyRecord): AnyRecord[] => {
@@ -237,6 +264,15 @@ function App() {
     const signedIn = await refreshAccount()
     if (!signedIn) throw new Error('Orbit sign-in was not completed')
     return true
+  }
+
+  const closeAccountMenu = () => accountMenuRef.current?.removeAttribute('open')
+
+  const signOut = async () => {
+    closeAccountMenu()
+    await api('/api/auth/logout', { method: 'POST', body: '{}' })
+    setState((current) => ({ ...current, auth: { signedIn: false, checked: true }, account: EMPTY_STATE.account }))
+    notify('Signed out')
   }
 
   const loadOrbitModels = async (force = true) => {
@@ -449,12 +485,19 @@ function App() {
     ? state.orbitModels
     : state.providers.find((item) => item.id === provider)?.models || []
 
-  return <div className="orbit-shell">
+  const toggleSidebar = () => setSidebarCollapsed((collapsed) => {
+    const next = !collapsed
+    closeAccountMenu()
+    localStorage.setItem('orbit.cli.sidebar.collapsed', next ? '1' : '0')
+    return next
+  })
+
+  return <div className={`orbit-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
     <aside className="sidebar">
-      <div className="brand"><span className="brand-mark"><Gamepad2 size={17}/></span><strong>Orbit</strong><small>CLI</small></div>
+      <div className="brand"><img src={ORBIT_WORDMARK_SRC} alt="Orbit" draggable={false}/><small>CLI</small></div>
       <div className="sidebar-actions">
-        <Button className="new-game-button" onPress={() => { setNewGameWorkspace(state.defaultWorkspace || workspace); setNewGameOpen(true) }}><Sparkles size={16}/><span><strong>New game</strong><small>Choose a fresh workspace</small></span></Button>
-        <Button className="new-task-button" isDisabled={!selectedWorkspace} onPress={startNewTask}><MessageSquarePlus size={15}/><span><strong>New task</strong><small>Same game, fresh context</small></span></Button>
+        <Button className="new-game-button" onPress={() => { setNewGameWorkspace(state.defaultWorkspace || workspace); setNewGameOpen(true) }}><SquarePen size={16}/><span>New game</span></Button>
+        <Tooltip><Tooltip.Trigger><Button className="new-task-button" isIconOnly variant="ghost" isDisabled={!selectedWorkspace} aria-label="New task in this game" onPress={startNewTask}><MessageSquarePlus size={16}/></Button></Tooltip.Trigger><Tooltip.Content>New task in this game</Tooltip.Content></Tooltip>
       </div>
       <div className="sidebar-heading"><span>Games</span><Button isIconOnly variant="ghost" aria-label="Refresh games" onPress={() => refresh().then(() => notify('Games refreshed')).catch((error) => notify(errorMessage(error), true))}>{refreshing ? <LoaderCircle className="spin" size={14}/> : <RefreshCw size={14}/>}</Button></div>
       <nav className="project-tree" aria-label="Local games and tasks">
@@ -475,20 +518,25 @@ function App() {
           </section>
         })}
       </nav>
-      <div className="account-card">
-        <span className={`account-dot${state.auth.signedIn ? ' online' : ''}`}/><span><strong>{authLabel}</strong><small>{state.account?.cadeBalance == null ? 'Orbit Cloud' : `${state.account.cadeBalance} Cade available`}</small></span>
-        <Button isIconOnly variant="ghost" aria-label={authLabel} onPress={() => {
-          const action = state.auth.signedIn ? api('/api/auth/logout', { method: 'POST', body: '{}' }).then(() => setState((current) => ({ ...current, auth: { signedIn: false, checked: true }, account: EMPTY_STATE.account }))) : ensureOrbitAuth()
-          Promise.resolve(action).catch((error) => notify(errorMessage(error), true))
-        }}><CircleUserRound size={17}/></Button>
-      </div>
+      <details className="account-menu" ref={accountMenuRef}>
+        <summary className="account-card" aria-label={`${authLabel} menu`} aria-haspopup="menu">
+          <span className={`account-dot${state.auth.signedIn ? ' online' : ''}`}/><span><strong>{authLabel}</strong><small>{state.account?.cadeBalance == null ? 'Orbit Cloud' : `${state.account.cadeBalance} Cade available`}</small></span>
+          <ChevronUp className="account-menu-chevron" size={14}/>
+        </summary>
+        <div className="account-popover" role="menu" aria-label="Orbit account">
+          {state.auth.signedIn ? <>
+            <button type="button" role="menuitem" onClick={() => { closeAccountMenu(); api('/api/account/open', { method: 'POST', body: '{}' }).catch((error) => notify(errorMessage(error), true)) }}><CircleUserRound size={15}/><span><strong>Account</strong><small>Profile and Orbit settings</small></span></button>
+            <button type="button" role="menuitem" onClick={() => { closeAccountMenu(); api('/api/account/billing', { method: 'POST', body: '{}' }).catch((error) => notify(errorMessage(error), true)) }}><Coins size={15}/><span><strong>Billing</strong><small>{state.account?.cadeBalance == null ? 'Cade and plan' : `${state.account.cadeBalance} Cade available`}</small></span></button>
+            <span className="account-menu-divider"/>
+            <button className="sign-out" type="button" role="menuitem" onClick={() => signOut().catch((error) => notify(errorMessage(error), true))}><LogOut size={15}/><span><strong>Sign out</strong><small>Keep local games on this computer</small></span></button>
+          </> : <button type="button" role="menuitem" onClick={() => { closeAccountMenu(); ensureOrbitAuth().catch((error) => notify(errorMessage(error), true)) }}><CircleUserRound size={15}/><span><strong>Sign in to Orbit</strong><small>Use Orbit Cloud models and Cade</small></span></button>}
+        </div>
+      </details>
     </aside>
 
     <header className="topbar">
+      <Tooltip><Tooltip.Trigger><Button className="sidebar-toggle" isIconOnly variant="ghost" aria-label={sidebarCollapsed ? 'Show navigation sidebar' : 'Hide navigation sidebar'} onPress={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={15}/> : <PanelLeftClose size={15}/>}</Button></Tooltip.Trigger><Tooltip.Content>{sidebarCollapsed ? 'Show navigation' : 'Hide navigation'}</Tooltip.Content></Tooltip>
       <div><h1>{selectedTitle}</h1><p>{selectedWorkspace || 'Choose a workspace to start a local game'}</p></div>
-      <div className="topbar-actions">
-        {state.auth.signedIn && <><Button variant="ghost" onPress={() => api('/api/account/open', { method: 'POST', body: '{}' }).catch((error) => notify(errorMessage(error), true))}><CircleUserRound size={14}/>Account</Button><Button variant="ghost" onPress={() => api('/api/account/billing', { method: 'POST', body: '{}' }).catch((error) => notify(errorMessage(error), true))}><Coins size={14}/>Billing</Button></>}
-      </div>
     </header>
 
     <main className="conversation">
@@ -504,7 +552,7 @@ function App() {
           {references.length ? <span className="attachment-count">{references.length} image{references.length === 1 ? '' : 's'}</span> : null}
           <Button variant="ghost" onPress={() => setSettingsOpen(true)}><Settings2 size={15}/>Run settings</Button>
           <span className="model-summary">{mode === 'orbit' ? 'Orbit Cloud' : state.providers.find((item) => item.id === provider)?.label || provider} · {model || managedLabel}</span>
-          <Button className="send-button" type="submit" isDisabled={running}>{running ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>}<span>{selectedWorkspace ? 'Send' : 'Create game'}</span></Button>
+          <Tooltip><Tooltip.Trigger><Button className="send-button" type="submit" isIconOnly aria-label={selectedWorkspace ? 'Send' : 'Create game'} isDisabled={running}>{running ? <LoaderCircle className="spin" size={16}/> : <Send size={16}/>}</Button></Tooltip.Trigger><Tooltip.Content>{selectedWorkspace ? 'Send' : 'Create game'}</Tooltip.Content></Tooltip>
         </div>
       </form>
     </main>
@@ -512,7 +560,7 @@ function App() {
     <aside className="preview-pane">
       <div className="preview-toolbar"><div><strong>Preview</strong><small>{preview ? `Run ${shortId(preview.runId, 'run_')}` : 'Validated builds only'}</small></div><div>
         {([['phone', Smartphone, 'Phone'], ['4:3', Tablet, '4:3'], ['pc', Monitor, 'Desktop']] as const).map(([value, Icon, label]) => <Tooltip key={value}><Tooltip.Trigger><Button isIconOnly variant={previewRatio === value ? 'primary' : 'ghost'} aria-label={`${label} preview`} onPress={() => setPreviewRatio(value as 'phone' | '4:3' | 'pc')}><Icon size={15}/></Button></Tooltip.Trigger><Tooltip.Content>{label} preview</Tooltip.Content></Tooltip>)}
-        <Button isIconOnly variant="ghost" aria-label="Refresh preview" onPress={() => preview && openPreview(preview.runId).catch((error) => notify(errorMessage(error), true))}><RotateCcw size={14}/></Button>
+        <Button isIconOnly variant="ghost" aria-label="Refresh preview" onPress={() => preview && openPreview(preview.runId).catch((error) => notify(errorMessage(error), true))}><RefreshCw size={14}/></Button>
         <Button isIconOnly variant="ghost" aria-label="Open preview in a new tab" onPress={() => preview && window.open(preview.url, '_blank', 'noopener,noreferrer')}><ArrowUpRight size={14}/></Button>
       </div></div>
       <div className={`preview-stage ratio-${previewRatio.replace(':', '-')}`}>
@@ -526,14 +574,19 @@ function App() {
 
     <Modal isOpen={Boolean(publishRun)} onOpenChange={(open: boolean) => !open && setPublishRun(null)}><Modal.Backdrop><Modal.Container size="md"><Modal.Dialog><Modal.CloseTrigger/><Modal.Header><Modal.Icon><Upload/></Modal.Icon><Modal.Heading>Publish this game?</Modal.Heading></Modal.Header><Modal.Body><p className="modal-copy">Orbit will upload the validated dist bundle and sanitized source under your signed-in account. Local generation and preview never publish automatically.</p></Modal.Body><Modal.Footer><Button variant="ghost" onPress={() => setPublishRun(null)}>Cancel</Button><Button onPress={() => publish().catch((error) => notify(errorMessage(error), true))}><Upload size={15}/>Publish</Button></Modal.Footer></Modal.Dialog></Modal.Container></Modal.Backdrop></Modal>
 
-    {toast && <div className={`toast${toast.error ? ' error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <CircleAlert size={15}/> : <Check size={15}/>}<span>{toast.message}</span></div>}
+    {toast && <div className={`toast${toast.error ? ' error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <CircleAlert size={15}/> : <Check size={15}/>}<span>{toast.message}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={13}/></button></div>}
   </div>
 }
 
 function RunTurn({ run, onPreview, onResume, onPublish, onExportMiniGame }: { run: AnyRecord; onPreview: () => void; onResume: (unsafe: boolean) => void; onPublish: () => void; onExportMiniGame: (platform: 'wechat' | 'douyin' | 'tiktok') => void }) {
   const trace = [run.plan?.todos?.length ? `Plan\n${run.plan.todos.map((todo: AnyRecord) => `${todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '·' : '○'} ${todo.title || todo.id}`).join('\n')}` : '', run.lastValidation ? `Validation\n${JSON.stringify(run.lastValidation, null, 2)}` : ''].filter(Boolean).join('\n\n')
   const completed = run.state === 'completed'
-  return <article className="turn"><div className="user-message">{run.prompt}</div><div className="result-card"><header><div><strong>{run.result?.title || run.gameName || run.folderName || 'Orbit result'}</strong><small>{run.mode === 'orbit' ? 'Orbit Cloud' : run.provider} · {run.model || 'automatic model'} · {run.runtime || 'auto'}</small></div><span className={`run-state ${run.state}`}>{runStateLabel(run.state)}</span></header><div className="result-body"><p>{run.result?.summary || (completed ? run.previewReady ? 'The validated build is ready to preview.' : run.previewIssue : run.lastError?.message || 'The checkpoint is saved and can be continued.')}</p><div className="run-actions">{completed && run.previewReady && <Button size="sm" onPress={onPreview}><Play size={13}/>Preview</Button>}{completed && run.previewReady && <Button size="sm" variant="ghost" onPress={onPublish}><Upload size={13}/>Publish</Button>}{completed && run.previewReady && (['wechat', 'douyin', 'tiktok'] as const).map((platform) => <Button key={platform} size="sm" variant="ghost" onPress={() => onExportMiniGame(platform)}><PackageOpen size={13}/>{platform === 'wechat' ? 'WeChat' : platform === 'douyin' ? 'Douyin' : 'TikTok'}</Button>)}{['paused', 'interrupted', 'queued'].includes(run.state) && <Button size="sm" onPress={() => onResume(false)}><RefreshCw size={13}/>Resume</Button>}{run.unsafeResumeRequired && <Button size="sm" variant="danger" onPress={() => onResume(true)}><ShieldCheck size={13}/>Confirm retry</Button>}</div>{trace && <Accordion className="trace"><Accordion.Item id={`trace-${run.id}`}><Accordion.Heading><Accordion.Trigger><span>Show work and validation</span><Accordion.Indicator><ChevronDown size={13}/></Accordion.Indicator></Accordion.Trigger></Accordion.Heading><Accordion.Panel><Accordion.Body><pre>{trace}</pre></Accordion.Body></Accordion.Panel></Accordion.Item></Accordion>}</div></div></article>
+  const failed = run.state === 'failed'
+  const summary = run.result?.summary || (completed
+    ? run.previewReady ? 'The validated build is ready to preview.' : run.previewIssue
+    : failed ? 'This run stopped before completion.' : 'The checkpoint is saved and can be continued.')
+  const failure = String(run.lastError?.message || run.error || 'The local run failed.')
+  return <article className={`turn${failed ? ' failed' : ''}`}><div className="user-message">{run.prompt}</div><div className="result-card"><header><div><strong>{run.result?.title || run.gameName || run.folderName || 'Orbit result'}</strong><small>{run.mode === 'orbit' ? 'Orbit Cloud' : run.provider} · {run.model || 'automatic model'} · {run.runtime || 'auto'}</small></div><span className={`run-state ${run.state}`}>{runStateLabel(run.state)}</span></header><div className="result-body"><p>{summary}</p>{failed && <details className="run-error-details"><summary><CircleAlert size={13}/><span>Run failed</span><small>Show details</small></summary><pre>{failure}</pre></details>}<div className="run-actions">{completed && run.previewReady && <Button size="sm" onPress={onPreview}><Play size={13}/>Preview</Button>}{completed && run.previewReady && <Button size="sm" variant="ghost" onPress={onPublish}><Upload size={13}/>Publish</Button>}{completed && run.previewReady && <details className="export-menu"><summary><PackageOpen size={13}/>Export<ChevronDown size={12}/></summary><div>{(['wechat', 'douyin', 'tiktok'] as const).map((platform) => <button key={platform} type="button" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onExportMiniGame(platform) }}><PackageOpen size={13}/><span><strong>{platform === 'wechat' ? 'WeChat Mini Game' : platform === 'douyin' ? 'Douyin Mini Game' : 'TikTok Mini Game'}</strong><small>Agent-assisted platform source</small></span></button>)}</div></details>}{['paused', 'interrupted', 'queued'].includes(run.state) && <Button size="sm" onPress={() => onResume(false)}><RefreshCw size={13}/>Resume</Button>}{run.unsafeResumeRequired && <Button size="sm" variant="danger" onPress={() => onResume(true)}><ShieldCheck size={13}/>Confirm retry</Button>}</div>{trace && <Accordion className="trace"><Accordion.Item id={`trace-${run.id}`}><Accordion.Heading><Accordion.Trigger><span>Show work and validation</span><Accordion.Indicator><ChevronDown size={13}/></Accordion.Indicator></Accordion.Trigger></Accordion.Heading><Accordion.Panel><Accordion.Body><pre>{trace}</pre></Accordion.Body></Accordion.Panel></Accordion.Item></Accordion>}</div></div></article>
 }
 
 function SettingsModal(props: AnyRecord) {
