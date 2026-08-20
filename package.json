@@ -1,6 +1,6 @@
 {
   "name": "@soda_game/orbit-cli",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Open-source local CLI and Web CLI for Orbit Arcade",
   "type": "module",
   "license": "MIT",
