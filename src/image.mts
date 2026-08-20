@@ -81,15 +81,55 @@ async function writeImage(prepared: { root: string; relative: string; target: st
   }
 }
 
-async function downloadReplicateImage(fetchImpl: typeof fetch, url: string, signal?: AbortSignal | null): Promise<{ bytes: Uint8Array; contentType: string }> {
+async function normalizeReplicateImage(bytes: Uint8Array): Promise<{
+  bytes: Uint8Array
+  contentType: 'image/png'
+  width: number
+  height: number
+}> {
+  const source = Buffer.from(bytes)
+  const png = source.subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)
+  const jpeg = source.byteLength >= 3 && source[0] === 0xff && source[1] === 0xd8 && source[2] === 0xff
+  const webp = source.byteLength >= 12
+    && source.toString('ascii', 0, 4) === 'RIFF'
+    && source.toString('ascii', 8, 12) === 'WEBP'
+  if (!png && !jpeg && !webp) throw new Error('Replicate returned an unsupported image file')
+  try {
+    const metadata = await sharp(source, { failOn: 'error', limitInputPixels: 8192 * 8192 }).metadata()
+    await sharp(source, { failOn: 'error', limitInputPixels: 8192 * 8192 }).stats()
+    if (!metadata.width || !metadata.height || metadata.width > 8192 || metadata.height > 8192) {
+      throw new Error('Replicate image dimensions are invalid')
+    }
+    if (metadata.format === 'png' && png) {
+      return { bytes, contentType: 'image/png', width: metadata.width, height: metadata.height }
+    }
+    const converted = await sharp(source, { failOn: 'error', limitInputPixels: 8192 * 8192 })
+      .png()
+      .toBuffer({ resolveWithObject: true })
+    if (converted.data.byteLength > MAX_IMAGE_BYTES) throw new Error('Normalized PNG exceeds the image byte limit')
+    return {
+      bytes: converted.data,
+      contentType: 'image/png',
+      width: converted.info.width,
+      height: converted.info.height,
+    }
+  } catch (error) {
+    if (error instanceof Error && /dimensions|byte limit/.test(error.message)) throw error
+    throw new Error('Replicate returned an invalid image file')
+  }
+}
+
+async function downloadReplicateImage(fetchImpl: typeof fetch, url: string, signal?: AbortSignal | null): Promise<{
+  bytes: Uint8Array
+  contentType: 'image/png'
+  width: number
+  height: number
+}> {
   const response = await fetchImpl(url, { redirect: 'error', signal })
   if (!response.ok) {
     throw Object.assign(new Error(`Replicate image download failed (${response.status})`), { code: 'IMAGE_PROVIDER_RESUME_REQUIRED' })
   }
-  return {
-    bytes: await collectStream(response.body, MAX_IMAGE_BYTES),
-    contentType: String(response.headers.get('content-type') || '').split(';', 1)[0]!.trim().toLowerCase(),
-  }
+  return normalizeReplicateImage(await collectStream(response.body, MAX_IMAGE_BYTES))
 }
 
 async function hasRealAlpha(bytes: Uint8Array): Promise<boolean> {
@@ -194,11 +234,7 @@ export class ImageService {
         downloaded = await downloadReplicateImage(this.fetchImpl, generated.outputUrl, input.signal)
       }
     }
-    const { bytes, contentType } = downloaded
-    const width = bytes.byteLength >= 24 && Buffer.from(bytes).subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)
-      ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(16)
-      : null
-    const height = width != null ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20) : null
+    const { bytes, contentType, width, height } = downloaded
     const output = await writeImage(input.prepared, {
       bytes,
       contentType,
