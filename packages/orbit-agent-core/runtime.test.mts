@@ -4,6 +4,7 @@ import test from 'node:test'
 import { transform } from 'esbuild'
 import {
   ORBIT_AGENT_CORE_VERSION,
+  ORBIT_AGENT_IMAGE_ASPECT_RATIOS,
   ORBIT_AGENT_MODEL_OUTPUT_LIMITS,
   ORBIT_PRO_AGENT_CORE_VERSION,
   agentMessageBudget,
@@ -13,8 +14,14 @@ import {
   buildOrbitProAgentCoreModuleSource,
   closeAgentToolBatchJournal,
   commitAgentMessageCompaction,
+  createGenerateImageToolSpec,
+  createGenerateSpritesheetToolSpec,
+  createGenerateGameMapToolSpec,
   createAgentToolBatchJournal,
+  evaluateAgentImageIntent,
   normalizeAgentInputItems,
+  normalizeAgentImageCapabilities,
+  normalizeAgentImageIntent,
   normalizeAgentMediaCache,
   normalizeAgentMediaObservation,
   normalizeAgentProject,
@@ -22,10 +29,117 @@ import {
   normalizeAgentThread,
   prepareAgentMessageCompaction,
   projectAgentInputItemsForProvider,
+  projectAgentImageArtifact,
   projectAgentMessagesForProvider,
   projectAgentTurnForProvider,
   recordAgentToolBatchResult,
 } from './runtime.mjs'
+
+test('image intent stays provider-neutral and artifacts redact host internals', () => {
+  const capabilities = normalizeAgentImageCapabilities({
+    route: 'byok',
+    generate: true,
+    backgroundRemoval: true,
+    controlImage: true,
+    localMaterialization: true,
+    provider: 'replicate',
+  })
+  assert.deepEqual(capabilities, {
+    schema: 'orbit.agent-image-capability.v1',
+    route: 'byok',
+    generate: true,
+    backgroundRemoval: true,
+    controlImage: true,
+    spritesheet: false,
+    gameMap: false,
+    visionReview: false,
+    localMaterialization: true,
+  })
+  const intent = normalizeAgentImageIntent({
+    prompt: 'Original translucent teal arcade hero sprite',
+    output_path: 'src/assets/hero.png',
+    kind: 'sprite',
+    aspect_ratio: '3:4',
+    transparent_background: true,
+    provider: 'replicate',
+    model: 'private-choice',
+    billingProfile: 'wrong-layer',
+  })
+  assert.deepEqual(intent, {
+    schema: 'orbit.agent-image.v1',
+    prompt: 'Original translucent teal arcade hero sprite',
+    outputPath: 'src/assets/hero.png',
+    kind: 'sprite',
+    transparentBackground: true,
+    aspectRatio: '3:4',
+  })
+  assert.equal(evaluateAgentImageIntent(intent, capabilities).allowed, true)
+  assert.equal(evaluateAgentImageIntent(intent, { route: 'byok' }).reason, 'background_removal_unavailable')
+  assert.deepEqual(ORBIT_AGENT_IMAGE_ASPECT_RATIOS, ['1:1', '3:4', '4:3', '9:16', '16:9'])
+
+  const artifact = projectAgentImageArtifact({
+    id: 'artifact-1',
+    projectPath: 'src/assets/hero.png',
+    mediaType: 'image/png',
+    width: 768,
+    height: 1024,
+    bytes: 1234,
+    sha256: 'a'.repeat(64),
+    transparent_background: true,
+    recovered: true,
+    provider: 'replicate',
+    model: 'google/nano-banana',
+    predictionId: 'prediction-secret',
+    receipt: { costUsd: 1 },
+    outputUrl: 'https://provider.example/temporary-output',
+    key: 'remote-object-key',
+  })
+  assert.deepEqual(artifact, {
+    schema: 'orbit.agent-image.v1',
+    artifactId: 'artifact-1',
+    mediaType: 'image/png',
+    projectPath: 'src/assets/hero.png',
+    sha256: 'a'.repeat(64),
+    width: 768,
+    height: 1024,
+    bytes: 1234,
+    transparentBackground: true,
+    recovered: true,
+  })
+  assert.equal(JSON.stringify(artifact).includes('prediction-secret'), false)
+  assert.equal(JSON.stringify(artifact).includes('provider.example'), false)
+})
+
+test('single-image tool spec exposes intent fields without billing or provider controls', () => {
+  const local = createGenerateImageToolSpec({ destination: 'workspace', backgroundRemoval: true }) as any
+  assert.deepEqual(local.function.parameters.required, ['prompt', 'output_path'])
+  assert.equal(local.function.parameters.properties.transparent_background.type, 'boolean')
+  assert.equal('model' in local.function.parameters.properties, false)
+  assert.equal('provider' in local.function.parameters.properties, false)
+  assert.equal('billingProfile' in local.function.parameters.properties, false)
+  assert.equal(JSON.stringify(local).includes('orbit.agent-tool-capability'), false)
+
+  const managed = createGenerateImageToolSpec({ destination: 'host' }) as any
+  assert.deepEqual(managed.function.parameters.required, ['prompt'])
+  assert.equal('output_path' in managed.function.parameters.properties, false)
+})
+
+test('spritesheet and game-map specs preserve one portable intent contract across destinations', () => {
+  const spritesheet = createGenerateSpritesheetToolSpec({ destination: 'workspace' }) as any
+  assert.equal(spritesheet.function.name, 'generate_spritesheet')
+  assert.deepEqual(spritesheet.function.parameters.required, [
+    'character_description', 'character_role', 'output_path',
+  ])
+  assert.deepEqual(spritesheet.function.parameters.properties.projection.enum, ['top_down', 'side_view'])
+  assert.equal('model' in spritesheet.function.parameters.properties, false)
+  assert.equal('provider' in spritesheet.function.parameters.properties, false)
+
+  const gameMap = createGenerateGameMapToolSpec({ destination: 'host' }) as any
+  assert.equal(gameMap.function.name, 'generate_game_map')
+  assert.deepEqual(gameMap.function.parameters.required, ['description'])
+  assert.equal('output_path' in gameMap.function.parameters.properties, false)
+  assert.equal(gameMap.function.parameters.properties.regions.maxItems, 12)
+})
 
 test('storage-neutral project, session/thread, turn and input items round-trip legacy shapes', () => {
   const project = normalizeAgentProject({
@@ -408,8 +522,8 @@ test('compaction keeps bounded canonical visual Turn identities for later provid
   assert.equal(JSON.stringify(pinned).includes('data:image'), false)
 })
 
-test('0.5.1 generated core keeps canonical/deprecated parity and atomic batch behavior', async () => {
-  assert.equal(ORBIT_AGENT_CORE_VERSION, 'orbit-agent-core/0.5.1')
+test('0.6.0 generated core keeps canonical/deprecated parity and atomic batch behavior', async () => {
+  assert.equal(ORBIT_AGENT_CORE_VERSION, 'orbit-agent-core/0.6.0')
   assert.equal(ORBIT_PRO_AGENT_CORE_VERSION, ORBIT_AGENT_CORE_VERSION)
   assert.equal(ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, 65_536)
   assert.equal(buildOrbitAgentCoreModuleSource(), buildOrbitProAgentCoreModuleSource())
@@ -425,6 +539,11 @@ test('0.5.1 generated core keeps canonical/deprecated parity and atomic batch be
   assert.equal(generated.ORBIT_PRO_AGENT_CORE_VERSION, ORBIT_AGENT_CORE_VERSION)
   assert.equal(generated.ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent, 65_536)
   assert.equal(typeof generated.projectAgentTurnForProvider, 'function')
+  assert.equal(typeof generated.projectAgentImageArtifact, 'function')
+  assert.deepEqual(
+    generated.projectAgentImageArtifact({ projectPath: 'src/assets/a.png', predictionId: 'private' }),
+    projectAgentImageArtifact({ projectPath: 'src/assets/a.png', predictionId: 'private' }),
+  )
   assert.doesNotThrow(() => generated.createAgentToolCapabilityRegistry({
     inspect_input: {
       prePlan: 'observe', observationScope: 'input', effect: 'read', parallel: 'safe', retry: 'safe',

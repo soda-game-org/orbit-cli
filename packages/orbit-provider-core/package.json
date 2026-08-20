@@ -1,6 +1,6 @@
 {
   "name": "@soda_game/orbit-provider-core",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Runtime-neutral provider transport shared by Orbit hosts",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "prepublishOnly": "npm run build && npm --prefix ../.. run check"
   },
   "dependencies": {
-    "@soda_game/orbit-agent-core": "0.5.2"
+    "@soda_game/orbit-agent-core": "0.6.0"
   },
   "publishConfig": {
     "access": "public",
