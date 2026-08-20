@@ -16,7 +16,20 @@ const CLI_OPENROUTER_HEADERS = Object.freeze({
 })
 
 export async function publicGenericSkill(): Promise<string> {
-  return fs.readFile(new URL('../skills/generic-html-game/SKILL.md', import.meta.url), 'utf8')
+  const candidates = [
+    new URL('../skills/generic-html-game/SKILL.md', import.meta.url),
+    new URL('../../skills/generic-html-game/SKILL.md', import.meta.url),
+  ]
+  let missing: unknown
+  for (const candidate of candidates) {
+    try {
+      return await fs.readFile(candidate, 'utf8')
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+      missing = error
+    }
+  }
+  throw missing
 }
 
 export class ByokProvider {
