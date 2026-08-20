@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import sharp from 'sharp'
 import { providerCredentialAccount } from './credentials.mjs'
 import { boundedString, canonicalDirectory, collectStream, durableAtomicWriteFile, id, isContained, sha256 } from './util.mjs'
-import { generateReplicateImage } from '@soda_game/orbit-provider-core'
+import { generateReplicateImage, removeReplicateImageBackground } from '@soda_game/orbit-provider-core'
 import type { CredentialStore } from './credentials.mjs'
 
 type Dynamic = Record<string, any>
@@ -75,6 +76,29 @@ async function writeImage(prepared: { root: string; relative: string; target: st
     degraded: generated.degraded === true,
     degradedFrom: generated.degradedFrom || null,
     costUsd: generated.costUsd,
+    transparentBackground: generated.transparentBackground === true,
+    backgroundRemovalFailed: generated.backgroundRemovalFailed === true,
+  }
+}
+
+async function downloadReplicateImage(fetchImpl: typeof fetch, url: string, signal?: AbortSignal | null): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const response = await fetchImpl(url, { redirect: 'error', signal })
+  if (!response.ok) {
+    throw Object.assign(new Error(`Replicate image download failed (${response.status})`), { code: 'IMAGE_PROVIDER_RESUME_REQUIRED' })
+  }
+  return {
+    bytes: await collectStream(response.body, MAX_IMAGE_BYTES),
+    contentType: String(response.headers.get('content-type') || '').split(';', 1)[0]!.trim().toLowerCase(),
+  }
+}
+
+async function hasRealAlpha(bytes: Uint8Array): Promise<boolean> {
+  try {
+    const image = sharp(Buffer.from(bytes), { failOn: 'error', limitInputPixels: 8192 * 8192 })
+    const [metadata, stats] = await Promise.all([image.metadata(), image.stats()])
+    return metadata.format === 'png' && metadata.hasAlpha === true && stats.isOpaque === false
+  } catch {
+    return false
   }
 }
 
@@ -134,13 +158,43 @@ export class ImageService {
       }
       throw error
     }
-    const response = await this.fetchImpl(generated.outputUrl, { redirect: 'error', signal: input.signal })
-    if (!response.ok) {
-      const resumable = Object.assign(new Error(`Replicate image download failed (${response.status})`), { code: 'IMAGE_PROVIDER_RESUME_REQUIRED' })
-      throw resumable
+    let delivery = generated
+    let backgroundRemovalFailed = false
+    if (input.transparentBackground === true) {
+      const removalState = state.backgroundRemoval ||= {}
+      try {
+        delivery = await removeReplicateImageBackground({
+          apiKey: token,
+          imageUrl: generated.outputUrl,
+          state: removalState,
+          signal: input.signal,
+          fetchImpl: this.fetchImpl,
+          persist: async () => input.persist?.(state),
+          onProgress: input.onProgress,
+          pollIntervalMs: input.pollIntervalMs,
+        })
+      } catch (error) {
+        if (removalState.requestPending && !removalState.predictionId) {
+          throw Object.assign(error instanceof Error ? error : new Error(String(error)), { code: 'UNSAFE_IMAGE_RETRY_REQUIRED' })
+        }
+        if (removalState.predictionId && !['failed', 'canceled'].includes(removalState.status)) {
+          throw Object.assign(error instanceof Error ? error : new Error(String(error)), { code: 'IMAGE_PROVIDER_RESUME_REQUIRED' })
+        }
+        removalState.error = error instanceof Error ? error.message : String(error)
+        backgroundRemovalFailed = true
+        await input.persist?.(state)
+      }
     }
-    const bytes = await collectStream(response.body, MAX_IMAGE_BYTES)
-    const contentType = String(response.headers.get('content-type') || '').split(';', 1)[0]!.trim().toLowerCase()
+    let downloaded = await downloadReplicateImage(this.fetchImpl, delivery.outputUrl, input.signal)
+    let transparentBackground = false
+    if (input.transparentBackground === true && !backgroundRemovalFailed) {
+      transparentBackground = await hasRealAlpha(downloaded.bytes)
+      if (!transparentBackground) {
+        backgroundRemovalFailed = true
+        downloaded = await downloadReplicateImage(this.fetchImpl, generated.outputUrl, input.signal)
+      }
+    }
+    const { bytes, contentType } = downloaded
     const width = bytes.byteLength >= 24 && Buffer.from(bytes).subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)
       ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(16)
       : null
@@ -153,6 +207,8 @@ export class ImageService {
       model: generated.model,
       degraded: false,
       degradedFrom: null,
+      transparentBackground,
+      backgroundRemovalFailed,
     })
     state.output = output
     await input.persist?.(state)
@@ -186,7 +242,9 @@ export class ImageService {
       await input.persist?.(state)
       const begun = await input.api.beginRun({
         clientRunId: state.clientRunId,
-        purpose: 'artboard_image',
+        purpose: input.transparentBackground === true
+          ? 'artboard_image_transparent'
+          : 'artboard_image',
         modelId: state.modelId,
       })
       state.cloudRunId = begun.run_id
@@ -201,8 +259,16 @@ export class ImageService {
         requestKey: state.requestKey,
         prompt: input.prompt,
         aspectRatio: input.aspectRatio || '1:1',
+        transparentBackground: input.transparentBackground === true,
         signal: input.signal,
       })
+      if (generated.transparentBackground === true && !await hasRealAlpha(generated.bytes)) {
+        generated = {
+          ...generated,
+          transparentBackground: false,
+          backgroundRemovalFailed: true,
+        }
+      }
       const output = await writeImage(input.prepared, generated)
       state.requestPending = false
       state.output = output

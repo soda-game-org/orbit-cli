@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import sharp from 'sharp'
 import test from 'node:test'
 import { OrbitApi } from '../src/api.mjs'
 import { ImageService } from '../src/image.mjs'
@@ -75,6 +76,21 @@ test('Orbit image API accepts an explicit signed fallback receipt', async () => 
   assert.equal(result.degradedFrom, 'google/nano-banana')
 })
 
+test('Orbit image API validates the shared 4:3 dimensions', async () => {
+  const api = new OrbitApi({ accessToken: async () => 'test-token' }, {
+    origin: 'https://api.example.test',
+    fetchImpl: async () => new Response(WEBP, { status: 200, headers: imageHeaders('image_request_landscape', {
+      'x-orbit-image-aspect-ratio': '4:3',
+      'x-orbit-image-width': '1024',
+      'x-orbit-image-height': '768',
+    }) }),
+  })
+  const result = await api.generateImage('11111111-1111-4111-8111-111111111111', {
+    requestKey: 'image_request_landscape', prompt: 'An original arcade landscape', aspectRatio: '4:3',
+  })
+  assert.deepEqual([result.width, result.height], [1024, 768])
+})
+
 test('ImageService attempts to settle the ambiguous run before an unsafe retry', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-image-retry-settle-'))
   t.after(() => fs.rm(root, { recursive: true, force: true }))
@@ -137,6 +153,38 @@ test('ImageService checkpoints the paid request and writes only a safe PNG path'
   assert.equal(settled, true)
   assert.equal(state.requestPending, false)
   assert.equal(checkpoints.some((checkpoint) => checkpoint.requestPending === true), true)
+})
+
+test('ImageService explicitly reserves the eight-Cade managed transparent-image product and verifies alpha', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-image-managed-alpha-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const alphaPng = await sharp({
+    create: { width: 2, height: 2, channels: 4, background: { r: 30, g: 60, b: 90, alpha: 0.25 } },
+  }).png().toBuffer()
+  let purpose = ''
+  const output = await new ImageService().generate({
+    workspace, output: 'assets/images/hero.png', prompt: 'Original transparent arcade hero sprite',
+    aspectRatio: '3:4', transparentBackground: true, state: {},
+    api: {
+      models: async () => ({ default: 'agent-model', models: [{ id: 'agent-model' }] }),
+      beginRun: async (input) => {
+        purpose = input.purpose
+        return { run_id: '22222222-2222-4222-8222-222222222222' }
+      },
+      generateImage: async () => ({
+        bytes: alphaPng, contentType: 'image/png', width: 768, height: 1024,
+        model: 'google/nano-banana', transparentBackground: true,
+        backgroundRemovalFailed: false, costUsd: 0.32,
+      }),
+      settle: async () => {},
+    },
+    persist: async () => {},
+  })
+  assert.equal(purpose, 'artboard_image_transparent')
+  assert.equal(output.transparentBackground, true)
+  assert.equal(output.backgroundRemovalFailed, false)
 })
 
 test('ImageService rejects an unsafe destination before reserving a paid run', async (t) => {
@@ -209,6 +257,46 @@ test('ImageService materializes a BYOK Replicate prediction as a verified local 
   assert.equal(output.height, 1)
   assert.equal(sha256(await fs.readFile(output.path)), sha256(PNG))
   assert.deepEqual(state.output, output)
+})
+
+test('ImageService runs resumable BYOK background removal and verifies real alpha', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-image-byok-alpha-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'workspace')
+  await fs.mkdir(workspace)
+  const opaquePng = await sharp({
+    create: { width: 2, height: 2, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } },
+  }).png().toBuffer()
+  const alphaPng = await sharp({
+    create: { width: 2, height: 2, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 0.25 } },
+  }).png().toBuffer()
+  const state = {}
+  const service = new ImageService({
+    credentials: { get: async () => 'replicate-key' },
+    fetchImpl: async (url) => {
+      const value = String(url)
+      if (value.includes('/models/google/nano-banana/')) return Response.json({ id: 'image-prediction', status: 'starting' })
+      if (value.endsWith('/predictions/image-prediction')) {
+        return Response.json({ id: 'image-prediction', status: 'succeeded', output: 'https://replicate.delivery/source.png' })
+      }
+      if (value.includes('/models/recraft-ai/recraft-remove-background/')) return Response.json({ id: 'remove-prediction', status: 'starting' })
+      if (value.endsWith('/predictions/remove-prediction')) {
+        return Response.json({ id: 'remove-prediction', status: 'succeeded', output: 'https://replicate.delivery/alpha.png' })
+      }
+      if (value === 'https://replicate.delivery/alpha.png') return new Response(alphaPng, { headers: { 'content-type': 'image/png' } })
+      if (value === 'https://replicate.delivery/source.png') return new Response(opaquePng, { headers: { 'content-type': 'image/png' } })
+      throw new Error(`Unexpected image request: ${value}`)
+    },
+  })
+  const output = await service.generate({
+    mode: 'byok', workspace, output: 'assets/images/hero.png',
+    prompt: 'Original teal arcade hero sprite', aspectRatio: '3:4', transparentBackground: true,
+    state, pollIntervalMs: 1, persist: async () => {},
+  })
+  assert.equal(output.transparentBackground, true)
+  assert.equal(output.backgroundRemovalFailed, false)
+  assert.equal(state.backgroundRemoval.predictionId, 'remove-prediction')
+  assert.deepEqual(await fs.readFile(output.path), alphaPng)
 })
 
 test('ImageService requires explicit confirmation after an ambiguous Replicate submission', async (t) => {

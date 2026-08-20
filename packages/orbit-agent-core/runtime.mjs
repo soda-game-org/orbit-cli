@@ -5,7 +5,7 @@
  * E2B imports. Those capabilities belong to host adapters.
  */
 
-export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.5.2'
+export const ORBIT_AGENT_CORE_VERSION = 'orbit-agent-core/0.6.0'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION = ORBIT_AGENT_CORE_VERSION
 
@@ -283,6 +283,217 @@ export function normalizeAgentStoreMediaManifest(raw, options = {}) {
       app_icon: normalizeAgentStoreMediaAsset(assets.app_icon || assets.appIcon, 'app_icon'),
     }),
   })
+}
+
+/**
+ * Portable image intent and artifact contracts. Provider selection, model
+ * choice, credentials, billing, journals, remote object keys, and materialized
+ * bytes remain host concerns and must never be accepted from the Agent.
+ */
+export const ORBIT_AGENT_IMAGE_SCHEMA = 'orbit.agent-image.v1'
+export const ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA = 'orbit.agent-image-capability.v1'
+export const ORBIT_AGENT_IMAGE_KINDS = Object.freeze([
+  'sprite',
+  'background',
+  'tile',
+  'ui_icon',
+  'cover',
+  'texture',
+  'other',
+])
+export const ORBIT_AGENT_IMAGE_ASPECT_RATIOS = Object.freeze(['1:1', '3:4', '4:3', '9:16', '16:9'])
+
+export function normalizeAgentImageCapabilities(raw = {}) {
+  const source = executionObject(raw)
+  const route = ['managed', 'byok'].includes(source.route) ? source.route : 'none'
+  const generate = route !== 'none' && source.generate !== false
+  return Object.freeze({
+    schema: ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA,
+    route,
+    generate,
+    backgroundRemoval: generate && source.backgroundRemoval === true,
+    controlImage: generate && source.controlImage === true,
+    spritesheet: generate && source.spritesheet === true,
+    gameMap: generate && source.gameMap === true,
+    visionReview: source.visionReview === true,
+    localMaterialization: source.localMaterialization === true,
+  })
+}
+
+/** Decide whether the declared host route can truthfully execute an image intent. */
+export function evaluateAgentImageIntent(raw, capabilities = {}) {
+  const intent = normalizeAgentImageIntent(raw)
+  const profile = normalizeAgentImageCapabilities(capabilities)
+  if (!intent) return Object.freeze({ allowed: false, reason: 'invalid_intent', intent: null, capabilities: profile })
+  if (!profile.generate) return Object.freeze({ allowed: false, reason: 'image_generation_unavailable', intent, capabilities: profile })
+  if (intent.transparentBackground && !profile.backgroundRemoval) {
+    return Object.freeze({ allowed: false, reason: 'background_removal_unavailable', intent, capabilities: profile })
+  }
+  return Object.freeze({ allowed: true, reason: 'available', intent, capabilities: profile })
+}
+
+export function normalizeAgentImageIntent(raw, options = {}) {
+  const source = executionObject(raw)
+  const prompt = agentPortableText(source.prompt, 8_000)
+  if (prompt.length < 8) return null
+  const outputPath = agentPortableText(source.output_path || source.outputPath || options.outputPath, 512)
+  const rawKind = agentPortableText(source.kind || options.kind, 80)
+  const kind = ORBIT_AGENT_IMAGE_KINDS.includes(rawKind) ? rawKind : 'other'
+  const rawAspectRatio = agentPortableText(source.aspect_ratio || source.aspectRatio || options.aspectRatio, 24)
+  const aspectRatio = ORBIT_AGENT_IMAGE_ASPECT_RATIOS.includes(rawAspectRatio) ? rawAspectRatio : undefined
+  const width = Number.isSafeInteger(source.width) && source.width >= 256 && source.width <= 8192 ? source.width : undefined
+  const height = Number.isSafeInteger(source.height) && source.height >= 256 && source.height <= 8192 ? source.height : undefined
+  const value = {
+    schema: ORBIT_AGENT_IMAGE_SCHEMA,
+    prompt,
+    kind,
+    transparentBackground: source.transparent_background === true || source.transparentBackground === true,
+  }
+  if (outputPath) value.outputPath = outputPath
+  if (aspectRatio) value.aspectRatio = aspectRatio
+  if (width !== undefined) value.width = width
+  if (height !== undefined) value.height = height
+  return Object.freeze(value)
+}
+
+/**
+ * Project a host result into the only image fields the Agent may observe.
+ * Deliberately ignores provider, model, prediction id, receipt, cost, object
+ * key, and raw provider URL fields even if a host accidentally supplies them.
+ */
+export function projectAgentImageArtifact(raw, options = {}) {
+  const source = executionObject(raw)
+  const artifactId = agentPortableId(source.artifactId || source.id || options.artifactId)
+  const projectPath = agentPortableText(source.projectPath || source.relativePath || options.projectPath, 512)
+  const artifactRef = agentPortableText(source.artifactRef || options.artifactRef, 2_000)
+  if (!artifactId && !projectPath && !artifactRef) return null
+  const value = {
+    schema: ORBIT_AGENT_IMAGE_SCHEMA,
+    artifactId: artifactId || agentFallbackId('image-artifact', `${projectPath}\0${artifactRef}`),
+    mediaType: agentPortableText(source.mediaType || source.contentType || source.content_type || options.mediaType, 120) || 'image/png',
+  }
+  if (projectPath) value.projectPath = projectPath
+  if (artifactRef) value.artifactRef = artifactRef
+  const digest = agentPortableText(source.sha256 || source.digest, 240)
+  if (/^[a-f0-9]{64}$/.test(digest)) value.sha256 = digest
+  for (const key of ['width', 'height', 'bytes']) {
+    if (Number.isSafeInteger(source[key]) && source[key] >= 0) value[key] = source[key]
+  }
+  if (source.transparentBackground === true || source.transparent_background === true) value.transparentBackground = true
+  if (source.backgroundRemovalFailed === true || source.background_removal_failed === true) value.backgroundRemovalFailed = true
+  if (source.recovered === true) value.recovered = true
+  if (source.reused === true) value.reused = true
+  return Object.freeze(value)
+}
+
+/** Build the canonical single-image tool spec for a declared host capability. */
+export function createGenerateImageToolSpec(options = {}) {
+  const destination = options.destination === 'host' ? 'host' : 'workspace'
+  const properties = {
+    prompt: { type: 'string', minLength: 8, maxLength: 8_000 },
+    kind: { type: 'string', enum: [...ORBIT_AGENT_IMAGE_KINDS] },
+    aspect_ratio: { type: 'string', enum: [...ORBIT_AGENT_IMAGE_ASPECT_RATIOS] },
+  }
+  if (options.dimensions !== false) {
+    properties.width = { type: 'integer', minimum: 256, maximum: 8_192 }
+    properties.height = { type: 'integer', minimum: 256, maximum: 8_192 }
+  }
+  if (options.backgroundRemoval === true) {
+    properties.transparent_background = {
+      type: 'boolean',
+      description: 'Per-asset request for real alpha transparency. Use true for composited sprites/icons and false for full-bleed backgrounds. Never emulate transparency with CSS or chroma keying.',
+    }
+  }
+  if (destination === 'workspace') {
+    properties.output_path = { type: 'string', description: 'Safe workspace-relative PNG destination chosen for this asset.' }
+  }
+  return defineAgentToolCapability({
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description: agentPortableText(options.description, 4_000) || 'Generate one original game image only when it materially improves active play. The host owns provider, model, credentials, billing, retry, and storage policy. If requested transparency fails, treat the result as opaque or regenerate; never fake alpha in CSS/canvas.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: destination === 'workspace' ? ['prompt', 'output_path'] : ['prompt'],
+        properties,
+      },
+    },
+  }, {
+    effect: 'execute',
+    parallel: 'serial',
+    retry: 'unsafe',
+  })
+}
+
+/** Build the shared 6x5 character-spritesheet intent contract. */
+export function createGenerateSpritesheetToolSpec(options = {}) {
+  const destination = options.destination === 'host' ? 'host' : 'workspace'
+  const properties = {
+    character_description: { type: 'string', minLength: 8, maxLength: 2_000 },
+    character_role: { type: 'string', minLength: 2, maxLength: 240 },
+    world_visual_context: { type: 'string', maxLength: 2_000 },
+    style: { type: 'string', maxLength: 500 },
+    projection: { type: 'string', enum: ['top_down', 'side_view'] },
+    action_kind: { type: 'string', maxLength: 160 },
+    action_description: { type: 'string', maxLength: 500 },
+  }
+  if (destination === 'workspace') {
+    properties.output_path = { type: 'string', description: 'Safe workspace-relative PNG destination for the 6x5 sheet.' }
+  }
+  return defineAgentToolCapability({
+    type: 'function',
+    function: {
+      name: 'generate_spritesheet',
+      description: agentPortableText(options.description, 4_000) || 'Generate one original 6x5 character spritesheet with real alpha. Use top_down for multi-facing movement or side_view for platformer movement. The host owns provider, billing, background removal, validation, and materialization.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: destination === 'workspace'
+          ? ['character_description', 'character_role', 'output_path']
+          : ['character_description', 'character_role'],
+        properties,
+      },
+    },
+  }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
+}
+
+/** Build the shared illustrated 2D game-map intent contract. */
+export function createGenerateGameMapToolSpec(options = {}) {
+  const destination = options.destination === 'host' ? 'host' : 'workspace'
+  const namedArea = {
+    type: 'object', additionalProperties: false, required: ['id'],
+    properties: {
+      id: { type: 'string', minLength: 1, maxLength: 120 },
+      name: { type: 'string', maxLength: 240 },
+      description: { type: 'string', maxLength: 1_000 },
+    },
+  }
+  const properties = {
+    description: { type: 'string', minLength: 8, maxLength: 4_000 },
+    style: { type: 'string', maxLength: 500 },
+    projection: { type: 'string', enum: ['top_down', 'side_view'] },
+    regions: { type: 'array', maxItems: 12, items: namedArea },
+    elements: { type: 'array', maxItems: 16, items: namedArea },
+    pseudo_3d: { type: 'boolean' },
+    width: { type: 'integer', minimum: 512, maximum: 1_024 },
+    height: { type: 'integer', minimum: 512, maximum: 1_024 },
+  }
+  if (destination === 'workspace') {
+    properties.output_path = { type: 'string', description: 'Safe workspace-relative PNG destination for the map background.' }
+  }
+  return defineAgentToolCapability({
+    type: 'function',
+    function: {
+      name: 'generate_game_map',
+      description: agentPortableText(options.description, 4_000) || 'Generate one original illustrated 2D game map or level background without characters. Use top_down for RPG/arena maps and side_view for platformer levels. The host owns provider, billing, validation, and materialization.',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        required: destination === 'workspace' ? ['description', 'output_path'] : ['description'],
+        properties,
+      },
+    },
+  }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
 }
 
 function executionObject(value) {
@@ -3174,6 +3385,13 @@ const CORE_EXPORTS = [
   ['orbitArcadeSdkContractText', orbitArcadeSdkContractText],
   ['orbitArcadeSdkSourceIssues', orbitArcadeSdkSourceIssues],
   ['normalizeAgentStoreMediaManifest', normalizeAgentStoreMediaManifest],
+  ['normalizeAgentImageCapabilities', normalizeAgentImageCapabilities],
+  ['evaluateAgentImageIntent', evaluateAgentImageIntent],
+  ['normalizeAgentImageIntent', normalizeAgentImageIntent],
+  ['projectAgentImageArtifact', projectAgentImageArtifact],
+  ['createGenerateImageToolSpec', createGenerateImageToolSpec],
+  ['createGenerateSpritesheetToolSpec', createGenerateSpritesheetToolSpec],
+  ['createGenerateGameMapToolSpec', createGenerateGameMapToolSpec],
   ['normalizeAgentToolCapability', normalizeAgentToolCapability],
   ['defineAgentToolCapability', defineAgentToolCapability],
   ['createAgentToolCapabilityRegistry', createAgentToolCapabilityRegistry],
@@ -3249,6 +3467,10 @@ export function buildOrbitAgentCoreModuleSource() {
     `const ORBIT_ARCADE_SDK_CONTRACT = Object.freeze(${JSON.stringify(ORBIT_ARCADE_SDK_CONTRACT)})`,
     `const ORBIT_AGENT_STORE_MEDIA_SCHEMA = ${JSON.stringify(ORBIT_AGENT_STORE_MEDIA_SCHEMA)}`,
     `const ORBIT_AGENT_STORE_MEDIA_ROLES = Object.freeze(${JSON.stringify(ORBIT_AGENT_STORE_MEDIA_ROLES)})`,
+    `const ORBIT_AGENT_IMAGE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_IMAGE_SCHEMA)}`,
+    `const ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA)}`,
+    `const ORBIT_AGENT_IMAGE_KINDS = Object.freeze(${JSON.stringify(ORBIT_AGENT_IMAGE_KINDS)})`,
+    `const ORBIT_AGENT_IMAGE_ASPECT_RATIOS = Object.freeze(${JSON.stringify(ORBIT_AGENT_IMAGE_ASPECT_RATIOS)})`,
     `const ORBIT_AGENT_MODEL_OUTPUT_LIMITS = Object.freeze(${JSON.stringify(ORBIT_AGENT_MODEL_OUTPUT_LIMITS)})`,
     `const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA = ${JSON.stringify(ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA)}`,
     `const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA = ${JSON.stringify(ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA)}`,
@@ -3284,6 +3506,10 @@ export function buildOrbitAgentCoreModuleSource() {
     'ORBIT_ARCADE_SDK_CONTRACT',
     'ORBIT_AGENT_STORE_MEDIA_SCHEMA',
     'ORBIT_AGENT_STORE_MEDIA_ROLES',
+    'ORBIT_AGENT_IMAGE_SCHEMA',
+    'ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA',
+    'ORBIT_AGENT_IMAGE_KINDS',
+    'ORBIT_AGENT_IMAGE_ASPECT_RATIOS',
     'ORBIT_AGENT_MODEL_OUTPUT_LIMITS',
     'ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA',
     'ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA',

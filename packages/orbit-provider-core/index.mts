@@ -81,12 +81,14 @@ export interface OrbitReplicate3dState extends JsonRecord {
 }
 
 export interface OrbitReplicateImageState extends OrbitReplicate3dState {}
+export interface OrbitReplicateBackgroundRemovalState extends OrbitReplicate3dState {}
 
 export const DEFAULT_MODEL_OUTPUT_TOKENS = ORBIT_AGENT_MODEL_OUTPUT_LIMITS.agent
 export const MAX_PROVIDER_OUTPUT_TOKENS = 1_000_000
 export const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
 export const MAX_MODEL_ID_CHARS = 120
 export const REPLICATE_IMAGE_MODEL = 'google/nano-banana'
+export const REPLICATE_REMOVE_BACKGROUND_MODEL = 'recraft-ai/recraft-remove-background'
 
 export const PROVIDERS: Readonly<Record<OrbitProviderId, OrbitProviderDefinition>> = Object.freeze({
   openrouter: {
@@ -908,12 +910,12 @@ export async function generateReplicateImage({
   apiKey, prompt, aspectRatio = '1:1', model = REPLICATE_IMAGE_MODEL, state = {},
   signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
 }: {
-  apiKey: string; prompt: string; aspectRatio?: '1:1' | '3:4' | '9:16' | '16:9'; model?: string
+  apiKey: string; prompt: string; aspectRatio?: '1:1' | '3:4' | '4:3' | '9:16' | '16:9'; model?: string
   state?: OrbitReplicateImageState; signal?: AbortSignal | null; fetchImpl?: typeof fetch
   persist?: (state: OrbitReplicateImageState) => void | Promise<void>
   onProgress?: (prediction: JsonRecord) => void | Promise<void>; pollIntervalMs?: number
 }): Promise<{ predictionId: string; status: string; outputUrl: string; model: string }> {
-  const ratio = ['1:1', '3:4', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '1:1'
+  const ratio = ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(aspectRatio) ? aspectRatio : '1:1'
   const selectedModel = String(model || REPLICATE_IMAGE_MODEL).trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(selectedModel)) {
     throw new TypeError('Replicate image model id is invalid')
@@ -927,6 +929,23 @@ export async function generateReplicateImage({
       output_format: 'png',
     },
     label: 'image', state, signal, fetchImpl, persist, onProgress, pollIntervalMs,
+  })
+}
+
+export async function removeReplicateImageBackground({
+  apiKey, imageUrl, state = {}, signal, fetchImpl = fetch, persist, onProgress, pollIntervalMs = 5_000,
+}: {
+  apiKey: string; imageUrl: string; state?: OrbitReplicateBackgroundRemovalState
+  signal?: AbortSignal | null; fetchImpl?: typeof fetch
+  persist?: (state: OrbitReplicateBackgroundRemovalState) => void | Promise<void>
+  onProgress?: (prediction: JsonRecord) => void | Promise<void>; pollIntervalMs?: number
+}): Promise<{ predictionId: string; status: string; outputUrl: string; model: string }> {
+  const sourceUrl = validateReplicateDeliveryUrl(imageUrl)
+  return runReplicatePrediction({
+    apiKey,
+    model: REPLICATE_REMOVE_BACKGROUND_MODEL,
+    input: { image: sourceUrl },
+    label: 'background removal', state, signal, fetchImpl, persist, onProgress, pollIntervalMs,
   })
 }
 

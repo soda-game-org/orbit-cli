@@ -5,12 +5,16 @@ import { MAX_TOOL_OUTPUT_CHARS } from './constants.mjs'
 import {
   agentPlanOpenBlockingTodosForFinish,
   completePublishTodosForFinish,
+  createGenerateImageToolSpec,
+  createGenerateSpritesheetToolSpec,
+  createGenerateGameMapToolSpec,
   createAgentToolCapabilityRegistry,
   defineAgentToolCapability,
   evaluateAgentToolPrePlan,
   getAgentToolCapability,
   normalizeAgentPlan,
   orbitArcadeSdkSourceIssues,
+  projectAgentImageArtifact,
 } from '@soda_game/orbit-agent-core'
 import { canonicalDirectory, durableAtomicWriteFile, isContained, redactWorkspacePath, sha256, sleep } from './util.mjs'
 import type { OrbitMode, OrbitRun } from './types.mjs'
@@ -79,22 +83,34 @@ const BYOK_3D_TOOL = declaredTool('generate_3d_model', 'Generate one original GL
 }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
 
 function imageTool(mode: OrbitMode): ToolDefinition {
-  return declaredTool('generate_image', mode === 'orbit'
-    ? 'Generate one original game image through the authenticated Orbit Worker. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use.'
-    : 'Generate one original game image with the user-configured Replicate key. Use it only when a high-impact 2D asset materially improves the game, wire the returned local path into the game, and do not generate decorative assets that the final build does not use. The user\'s Replicate account may be billed.', {
-  type: 'object', additionalProperties: false, required: ['prompt', 'output_path'],
-  properties: {
-    prompt: { type: 'string', minLength: 8, maxLength: 8000 },
-    output_path: { type: 'string', description: 'Safe workspace-relative .png path.' },
-    aspect_ratio: { type: 'string', enum: ['1:1', '9:16', '16:9'] },
-  },
-  }, { effect: 'execute', parallel: 'serial', retry: 'unsafe' })
+  return createGenerateImageToolSpec({
+    destination: 'workspace',
+    dimensions: false,
+    backgroundRemoval: true,
+    description: mode === 'orbit'
+      ? 'Generate one original game image through the authenticated Orbit route. Use only when a high-impact 2D asset materially improves active play, wire the returned local projectPath into the game, and do not generate decorative assets that the final build does not use. Request transparent_background per sprite/icon asset when real alpha is required.'
+      : 'Generate one original game image with the user-configured Replicate route. Use only when a high-impact 2D asset materially improves active play, wire the returned local projectPath into the game, and do not generate decorative assets that the final build does not use. The user\'s Replicate account may be billed; request transparent_background per sprite/icon asset when real alpha is required.',
+  }) as ToolDefinition
+}
+
+function spritesheetTool(mode: OrbitMode): ToolDefinition {
+  return createGenerateSpritesheetToolSpec({
+    destination: 'workspace',
+    description: `Generate one original 6x5 character spritesheet with real alpha through the ${mode === 'orbit' ? 'authenticated Orbit' : 'user-configured Replicate'} route. Wire the returned projectPath and frame metadata into active play.`,
+  }) as ToolDefinition
+}
+
+function gameMapTool(mode: OrbitMode): ToolDefinition {
+  return createGenerateGameMapToolSpec({
+    destination: 'workspace',
+    description: `Generate one original 2D game map or side-view level background through the ${mode === 'orbit' ? 'authenticated Orbit' : 'user-configured Replicate'} route. Wire the returned projectPath into active play.`,
+  }) as ToolDefinition
 }
 
 export function agentTools({ mode, runtime = 'auto', operation = 'create', generateImages = false, generate3d = false }: { mode: OrbitMode; runtime?: string; operation?: 'create' | 'edit'; generateImages?: boolean; generate3d?: boolean }): ToolDefinition[] {
   const tools = [...BASE_TOOLS]
   if (runtime === 'auto' && operation === 'create') tools.splice(1, 0, RUNTIME_DECISION_TOOL)
-  if (generateImages) tools.splice(tools.length - 3, 0, imageTool(mode))
+  if (generateImages) tools.splice(tools.length - 3, 0, imageTool(mode), spritesheetTool(mode), gameMapTool(mode))
   if (generate3d) tools.splice(tools.length - 3, 0, mode === 'orbit' ? OFFICIAL_3D_TOOL : BYOK_3D_TOOL)
   return tools
 }
@@ -178,6 +194,52 @@ export function providerAssetResult(output: Dynamic): Dynamic {
   if (typeof output?.degraded === 'boolean') safe.degraded = output.degraded
   if (typeof output?.degradedFrom === 'string') safe.degradedFrom = output.degradedFrom.slice(0, 160)
   if (typeof output?.costUsd === 'number' && Number.isFinite(output.costUsd) && output.costUsd >= 0) safe.costUsd = output.costUsd
+  return safe
+}
+
+/** Safe image result projection used whenever a saved transcript is replayed. */
+export function providerImageToolResult(output: Dynamic): Dynamic {
+  const projected = projectAgentImageArtifact(output)
+  if (!projected) return {}
+  const safe: Dynamic = { ...projected }
+  if (output?.spritesheet === true) {
+    safe.spritesheet = true
+    safe.projection = output.projection === 'side_view' ? 'side_view' : 'top_down'
+    for (const key of ['cols', 'rows', 'frameWidth', 'frameHeight']) {
+      if (Number.isSafeInteger(output[key]) && output[key] >= 0) safe[key] = output[key]
+    }
+    if (output.animations && typeof output.animations === 'object' && !Array.isArray(output.animations)) {
+      safe.animations = Object.fromEntries(Object.entries(output.animations).slice(0, 12).map(([name, raw]) => {
+        const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Dynamic : {}
+        const animation: Dynamic = {}
+        for (const key of ['row', 'start', 'end', 'frameRate']) {
+          if (Number.isSafeInteger(value[key]) && value[key] >= 0) animation[key] = value[key]
+        }
+        if (typeof value.loop === 'boolean') animation.loop = value.loop
+        if (typeof value.description === 'string') animation.description = value.description.slice(0, 500)
+        return [name.slice(0, 80), animation]
+      }))
+    }
+  }
+  if (output?.gameMap === true) {
+    safe.gameMap = true
+    safe.projection = output.projection === 'side_view' ? 'side_view' : 'top_down'
+    const projectItems = (value: unknown, maximum: number) => Array.isArray(value)
+      ? value.slice(0, maximum).map((raw) => {
+          const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Dynamic : {}
+          return {
+            id: String(item.id || '').slice(0, 120),
+            name: String(item.name || '').slice(0, 240),
+            description: String(item.description || '').slice(0, 1_000),
+          }
+        })
+      : []
+    safe.regions = projectItems(output.regions, 12)
+    safe.elements = projectItems(output.elements, 16)
+    safe.visionReview = output.visionReview?.reviewed === true
+      ? { status: 'reviewed', reviewed: true }
+      : { status: 'host_unavailable', reviewed: false }
+  }
   return safe
 }
 
@@ -563,7 +625,7 @@ export class ToolExecutor {
           reusedFromCallId: reusable.callId,
         }
         await this.store.save(this.run)
-        return JSON.stringify({ ...providerAssetResult(reusable.output), reused: true }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+        return JSON.stringify(projectAgentImageArtifact({ ...reusable.output, reused: true })).slice(0, MAX_TOOL_OUTPUT_CHARS)
       }
       this.run.assetImages[call.id].outputPath = outputPath
       await this.store.save(this.run)
@@ -574,6 +636,7 @@ export class ToolExecutor {
         prompt: args.prompt,
         output: outputPath,
         aspectRatio: args.aspect_ratio || '1:1',
+        transparentBackground: args.transparent_background === true,
         state: this.run.assetImages[call.id],
         retryUnsafe: this.retryUnsafe,
         signal: this.signal,
@@ -581,7 +644,97 @@ export class ToolExecutor {
         requestKey: `image_${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120)}`,
         persist: async () => this.store.save(this.run),
       })
-      return JSON.stringify(providerAssetResult(result)).slice(0, MAX_TOOL_OUTPUT_CHARS)
+      return JSON.stringify(projectAgentImageArtifact(result)).slice(0, MAX_TOOL_OUTPUT_CHARS)
+    }
+    if (name === 'generate_spritesheet') {
+      if (!this.run.generateImages || (this.run.mode === 'orbit' && !this.api)) throw new Error('Image generation was not enabled for this run')
+      const outputPath = relativePath(args.output_path)
+      if (!/^(?:src|public)\/assets\/.+\.png$/i.test(outputPath)) throw new Error('Spritesheet output must be a PNG under src/assets or public/assets')
+      const projection = args.projection === 'side_view' ? 'side_view' : 'top_down'
+      const action = String(args.action_description || args.action_kind || 'contextual action').trim().slice(0, 500)
+      const rowContract = projection === 'side_view'
+        ? `Rows in exact order: idle side, run, jump/fall, land/recovery, ${action}. Six coherent frames per row.`
+        : 'Rows in exact order: walk left, walk down, walk up, directional idle poses, auxiliary movement. Six coherent frames per row.'
+      const prompt = [
+        'Create one original game-ready character spritesheet as an exact 6-column by 5-row grid.',
+        `Character role: ${String(args.character_role || '').trim()}.`,
+        `Appearance: ${String(args.character_description || '').trim()}.`,
+        args.world_visual_context ? `World context: ${String(args.world_visual_context).trim()}.` : '',
+        args.style ? `Style: ${String(args.style).trim()}.` : '',
+        rowContract,
+        'Every cell uses identical scale, anchor, camera, lighting, and padding. No text, labels, borders, logos, UI, scenery, or contact shadows. Flat removable background.',
+      ].filter(Boolean).join(' ')
+      this.run.assetImages ||= {}
+      this.run.assetImages[call.id] ||= { outputPath }
+      const result = await this.image.generate({
+        mode: this.run.mode, api: this.api, workspace: root, prompt,
+        output: outputPath, aspectRatio: '1:1', transparentBackground: true,
+        state: this.run.assetImages[call.id], retryUnsafe: this.retryUnsafe,
+        signal: this.signal,
+        clientRunId: `${this.run.id}.spritesheet.${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 72)}`,
+        requestKey: `spritesheet_${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 110)}`,
+        persist: async () => this.store.save(this.run),
+      })
+      const artifact = projectAgentImageArtifact(result)
+      const cols = 6
+      const rows = 5
+      const animations = projection === 'side_view'
+        ? {
+            idle_side: { row: 0, start: 0, end: 5, frameRate: 6, loop: true },
+            run: { row: 1, start: 6, end: 11, frameRate: 12, loop: true },
+            jump_air_fall: { row: 2, start: 12, end: 17, frameRate: 8, loop: false },
+            land: { row: 3, start: 18, end: 23, frameRate: 10, loop: false },
+            action: { row: 4, start: 24, end: 29, frameRate: 12, loop: false, description: action },
+          }
+        : {
+            walk_left: { row: 0, start: 0, end: 5, frameRate: 10 },
+            walk_down: { row: 1, start: 6, end: 11, frameRate: 10 },
+            walk_up: { row: 2, start: 12, end: 17, frameRate: 10 },
+            idle: { row: 3, start: 18, end: 23, frameRate: 6 },
+          }
+      return JSON.stringify({
+        ...artifact, spritesheet: true, projection, cols, rows,
+        frameWidth: Math.floor(Number(artifact?.width || 0) / cols),
+        frameHeight: Math.floor(Number(artifact?.height || 0) / rows),
+        animations,
+      }).slice(0, MAX_TOOL_OUTPUT_CHARS)
+    }
+    if (name === 'generate_game_map') {
+      if (!this.run.generateImages || (this.run.mode === 'orbit' && !this.api)) throw new Error('Image generation was not enabled for this run')
+      const outputPath = relativePath(args.output_path)
+      if (!/^(?:src|public)\/assets\/.+\.png$/i.test(outputPath)) throw new Error('Game-map output must be a PNG under src/assets or public/assets')
+      const projection = args.projection === 'side_view' ? 'side_view' : 'top_down'
+      const regions = Array.isArray(args.regions) ? args.regions.slice(0, 12) : []
+      const elements = Array.isArray(args.elements) ? args.elements.slice(0, 16) : []
+      const prompt = [
+        `Create one original ${projection === 'side_view' ? 'horizontal side-view platformer level background' : 'top-down game map background'}.`,
+        String(args.description || '').trim(),
+        args.style ? `Style: ${String(args.style).trim()}.` : '',
+        args.pseudo_3d === true ? 'Use restrained depth while preserving a clear playable plane.' : 'Keep the gameplay plane immediately readable.',
+        regions.length ? `Planned regions: ${regions.map((item: Dynamic) => `${item.name || item.id}: ${item.description || ''}`).join('; ')}.` : '',
+        elements.length ? `Planned elements: ${elements.map((item: Dynamic) => `${item.name || item.id}: ${item.description || ''}`).join('; ')}.` : '',
+        'Background only: no characters, UI, text, labels, logos, borders, or camera mockup.',
+      ].filter(Boolean).join(' ')
+      const width = Number(args.width) || 1024
+      const height = Number(args.height) || (projection === 'side_view' ? 576 : 1024)
+      const aspectRatio = width > height ? '16:9' : height > width ? '9:16' : '1:1'
+      this.run.assetImages ||= {}
+      this.run.assetImages[call.id] ||= { outputPath }
+      const result = await this.image.generate({
+        mode: this.run.mode, api: this.api, workspace: root, prompt,
+        output: outputPath, aspectRatio, transparentBackground: false,
+        state: this.run.assetImages[call.id], retryUnsafe: this.retryUnsafe,
+        signal: this.signal,
+        clientRunId: `${this.run.id}.map.${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 80)}`,
+        requestKey: `map_${String(call.id).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 120)}`,
+        persist: async () => this.store.save(this.run),
+      })
+      return JSON.stringify({
+        ...projectAgentImageArtifact(result), gameMap: true, projection,
+        regions: regions.map((item: Dynamic) => ({ id: String(item.id || '').slice(0, 120), name: String(item.name || '').slice(0, 240), description: String(item.description || '').slice(0, 1_000) })),
+        elements: elements.map((item: Dynamic) => ({ id: String(item.id || '').slice(0, 120), name: String(item.name || '').slice(0, 240), description: String(item.description || '').slice(0, 1_000) })),
+        visionReview: { status: 'host_unavailable', reviewed: false },
+      }).slice(0, MAX_TOOL_OUTPUT_CHARS)
     }
     if (name === 'generate_3d_model') {
       if (!this.run.generate3d) throw new Error('3D generation was not enabled for this run')

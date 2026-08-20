@@ -1,6 +1,6 @@
 {
   "name": "@soda_game/orbit-agent-core",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Portable, platform-neutral agent state and execution policy shared by Orbit hosts",
   "type": "module",
   "license": "MIT",

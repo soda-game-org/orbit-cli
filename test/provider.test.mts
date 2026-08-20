@@ -10,6 +10,7 @@ import {
   buildProviderRequest,
   generateReplicateImage,
   generateReplicateModel3d,
+  removeReplicateImageBackground,
   normalizeProviderUsage,
   parseProviderAssistant,
   validateReplicateDeliveryUrl,
@@ -644,6 +645,33 @@ test('shared Replicate image transport uses a durable prediction and requests a 
   } })
   assert.equal(state.requestPending, false)
   assert.equal(state.predictionId, 'image-prediction-1')
+})
+
+test('shared Replicate background removal is a separate resumable prediction stage', async () => {
+  const state = {}
+  const calls = []
+  const result = await removeReplicateImageBackground({
+    apiKey: 'replicate-key',
+    imageUrl: 'https://images.replicate.delivery/source.png',
+    state,
+    pollIntervalMs: 1,
+    persist: async () => {},
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url: String(url), init })
+      if (String(url).includes('/models/')) return Response.json({ id: 'remove-prediction-1', status: 'starting' })
+      return Response.json({ status: 'succeeded', output: 'https://images.replicate.delivery/transparent.png' })
+    },
+  })
+  assert.deepEqual(result, {
+    predictionId: 'remove-prediction-1',
+    status: 'succeeded',
+    outputUrl: 'https://images.replicate.delivery/transparent.png',
+    model: 'recraft-ai/recraft-remove-background',
+  })
+  assert.equal(calls[0].url, 'https://api.replicate.com/v1/models/recraft-ai/recraft-remove-background/predictions')
+  assert.deepEqual(JSON.parse(calls[0].init.body), { input: { image: 'https://images.replicate.delivery/source.png' } })
+  assert.equal(state.requestPending, false)
+  assert.equal(state.predictionId, 'remove-prediction-1')
 })
 
 test('shared Replicate 3D transport marks a definitive provider rejection safe to retry', async () => {

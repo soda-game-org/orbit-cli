@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { RunStore } from '../src/run-store.mjs'
-import { agentTools, ToolExecutor } from '../src/tools.mjs'
+import { agentTools, providerImageToolResult, ToolExecutor } from '../src/tools.mjs'
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orbit-tools-'))
@@ -124,7 +124,14 @@ test('runs the explicit build target with an isolated home and filtered environm
 test('offers image generation to explicit Orbit and BYOK game-agent runs and checkpoints tool output', async (t) => {
   const orbitTools = agentTools({ mode: 'orbit', generateImages: true, generate3d: false })
   assert.equal(orbitTools.some((item) => item.function.name === 'generate_image'), true)
+  assert.equal(orbitTools.some((item) => item.function.name === 'generate_spritesheet'), true)
+  assert.equal(orbitTools.some((item) => item.function.name === 'generate_game_map'), true)
+  const imageSpec = orbitTools.find((item) => item.function.name === 'generate_image')
+  assert.deepEqual(imageSpec?.function.parameters.properties.aspect_ratio.enum, ['1:1', '3:4', '4:3', '9:16', '16:9'])
+  assert.equal(imageSpec?.function.parameters.properties.transparent_background.type, 'boolean')
+  assert.equal(Object.hasOwn(imageSpec?.function.parameters.properties || {}, 'model'), false)
   assert.equal(agentTools({ mode: 'orbit', generateImages: false }).some((item) => item.function.name === 'generate_image'), false)
+  assert.equal(agentTools({ mode: 'orbit', generateImages: false }).some((item) => item.function.name === 'generate_spritesheet'), false)
   assert.equal(agentTools({ mode: 'byok', generateImages: true }).some((item) => item.function.name === 'generate_image'), true)
 
   const { workspace, store, run } = await fixture(t)
@@ -144,9 +151,72 @@ test('offers image generation to explicit Orbit and BYOK game-agent runs and che
   const toolCall = call('generate_image', { prompt: 'An original neon arcade icon', output_path: 'assets/images/icon.png', aspect_ratio: '1:1' })
   toolCall.id = 'image-call-1'
   const result = JSON.parse(await executor.execute(toolCall))
-  assert.equal(result.relativePath, 'assets/images/icon.png')
+  assert.equal(result.projectPath, 'assets/images/icon.png')
+  assert.equal(Object.hasOwn(result, 'model'), false)
   assert.equal(received.workspace, await fs.realpath(workspace))
   assert.equal((await store.load(run.id)).assetImages['image-call-1'].output.relativePath, 'assets/images/icon.png')
+})
+
+test('materializes portable spritesheet and game-map tool results through the same image host', async (t) => {
+  const { workspace, store, run } = await fixture(t)
+  run.mode = 'orbit'
+  run.generateImages = true
+  await store.save(run)
+  const executor = new ToolExecutor({
+    workspace, store, run, api: {},
+    image: { generate: async (input) => {
+      input.state.output = {
+        relativePath: input.output, contentType: 'image/png', width: 600, height: 500,
+        transparentBackground: input.transparentBackground === true,
+      }
+      await input.persist()
+      return input.state.output
+    } },
+  })
+  const spriteCall = call('generate_spritesheet', {
+    character_description: 'Original teal courier with a bright readable silhouette',
+    character_role: 'courier', projection: 'side_view', action_kind: 'dash',
+    output_path: 'src/assets/courier-sheet.png',
+  })
+  spriteCall.id = 'spritesheet-call-1'
+  const sheet = JSON.parse(await executor.execute(spriteCall))
+  assert.equal(sheet.projectPath, 'src/assets/courier-sheet.png')
+  assert.deepEqual([sheet.cols, sheet.rows, sheet.frameWidth, sheet.frameHeight], [6, 5, 100, 100])
+  assert.equal(sheet.transparentBackground, true)
+
+  const mapCall = call('generate_game_map', {
+    description: 'Original side-view neon canal level with three readable traversal bands',
+    projection: 'side_view', output_path: 'src/assets/canal-map.png',
+    regions: [{ id: 'start', name: 'Start Dock' }],
+  })
+  mapCall.id = 'map-call-1'
+  const map = JSON.parse(await executor.execute(mapCall))
+  assert.equal(map.projectPath, 'src/assets/canal-map.png')
+  assert.equal(map.gameMap, true)
+  assert.equal(map.projection, 'side_view')
+  assert.equal(map.regions[0].id, 'start')
+  assert.deepEqual(map.visionReview, { status: 'host_unavailable', reviewed: false })
+})
+
+test('saved specialized image results retain gameplay metadata without provider internals', () => {
+  const result = providerImageToolResult({
+    projectPath: 'src/assets/courier-sheet.png',
+    mediaType: 'image/png', sha256: 'a'.repeat(64), width: 600, height: 500,
+    transparentBackground: true, spritesheet: true, projection: 'side_view',
+    cols: 6, rows: 5, frameWidth: 100, frameHeight: 100,
+    animations: { run: { row: 1, start: 6, end: 11, frameRate: 12, loop: true } },
+    provider: 'replicate', predictionId: 'private-id', outputUrl: 'https://replicate.delivery/private.png',
+    model: 'google/nano-banana', costUsd: 0.32,
+  })
+  assert.equal(result.projectPath, 'src/assets/courier-sheet.png')
+  assert.equal(result.spritesheet, true)
+  assert.equal(result.animations.run.start, 6)
+  const wire = JSON.stringify(result)
+  assert.equal(wire.includes('private-id'), false)
+  assert.equal(wire.includes('replicate.delivery'), false)
+  assert.equal(Object.hasOwn(result, 'provider'), false)
+  assert.equal(Object.hasOwn(result, 'model'), false)
+  assert.equal(Object.hasOwn(result, 'costUsd'), false)
 })
 
 test('routes BYOK image tool calls through the same game-agent executor without an Orbit API', async (t) => {
@@ -168,7 +238,8 @@ test('routes BYOK image tool calls through the same game-agent executor without 
   const result = JSON.parse(await executor.execute(toolCall))
   assert.equal(received.mode, 'byok')
   assert.equal(received.api, undefined)
-  assert.equal(result.relativePath, 'assets/images/background.png')
+  assert.equal(result.projectPath, 'assets/images/background.png')
+  assert.equal(Object.hasOwn(result, 'model'), false)
 })
 
 test('reuses a verified generated image across different model tool-call ids', async (t) => {
@@ -214,6 +285,7 @@ test('reuses a verified generated image across different model tool-call ids', a
   const reused = JSON.parse(await executor.execute(second))
   assert.equal(generated, 1)
   assert.equal(reused.reused, true)
-  assert.equal(reused.relativePath, 'assets/images/target.png')
+  assert.equal(reused.projectPath, 'assets/images/target.png')
+  assert.equal(Object.hasOwn(reused, 'costUsd'), false)
   assert.equal((await store.load(run.id)).assetImages['image-call-second'].reusedFromCallId, 'image-call-first')
 })

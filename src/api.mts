@@ -137,9 +137,9 @@ export class OrbitApi {
     return this.request('/api/engine/artboard/models', { method: 'GET' })
   }
 
-  async generateImage(cloudRunId: string, input: { aspectRatio: string; requestKey: string; prompt: string; signal?: AbortSignal | null }): Promise<Record<string, any>> {
-    const aspectRatio = ['1:1', '3:4', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : null
-    if (!aspectRatio) throw new TypeError('Image aspect ratio must be 1:1, 3:4, 9:16, or 16:9')
+  async generateImage(cloudRunId: string, input: { aspectRatio: string; requestKey: string; prompt: string; transparentBackground?: boolean; signal?: AbortSignal | null }): Promise<Record<string, any>> {
+    const aspectRatio = ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(input.aspectRatio) ? input.aspectRatio : null
+    if (!aspectRatio) throw new TypeError('Image aspect ratio must be 1:1, 3:4, 4:3, 9:16, or 16:9')
     const response = await this.request(`/api/engine/runs/${encodeURIComponent(cloudRunId)}/artboard/images`, {
       method: 'POST',
       signal: input.signal,
@@ -148,6 +148,7 @@ export class OrbitApi {
         request_key: input.requestKey,
         prompt: input.prompt,
         aspect_ratio: aspectRatio,
+        ...(input.transparentBackground === true ? { transparent_background: true } : {}),
       }),
     }, { raw: true, timeoutMs: 5 * 60_000 })
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
@@ -162,8 +163,18 @@ export class OrbitApi {
     const actualHash = sha256(bytes)
     const model = response.headers.get('x-orbit-image-model')
     const degradedFrom = response.headers.get('x-orbit-image-degraded-from')
+    const transparentBackground = response.headers.get('x-orbit-transparent-background') === 'true'
+    const backgroundRemovalFailed = response.headers.get('x-orbit-background-removal-failed') === 'true'
     const expectedHash = response.headers.get('x-orbit-content-sha256')?.toLowerCase()
-    const expectedDimensions = aspectRatio === '1:1' ? [1024, 1024] : aspectRatio === '3:4' ? [768, 1024] : aspectRatio === '9:16' ? [576, 1024] : [1024, 576]
+    const expectedDimensions = aspectRatio === '1:1'
+      ? [1024, 1024]
+      : aspectRatio === '3:4'
+        ? [768, 1024]
+        : aspectRatio === '4:3'
+          ? [1024, 768]
+          : aspectRatio === '9:16'
+            ? [576, 1024]
+            : [1024, 576]
     if (response.headers.get('x-orbit-contract-version') !== '1'
       || response.headers.get('x-orbit-request-key') !== input.requestKey
       || !model || !OFFICIAL_IMAGE_MODELS.has(model)
@@ -171,6 +182,8 @@ export class OrbitApi {
       || response.headers.get('x-orbit-image-aspect-ratio') !== aspectRatio
       || Number(response.headers.get('x-orbit-image-width')) !== expectedDimensions[0]
       || Number(response.headers.get('x-orbit-image-height')) !== expectedDimensions[1]
+      || (input.transparentBackground === true && transparentBackground === backgroundRemovalFailed)
+      || (input.transparentBackground !== true && (transparentBackground || backgroundRemovalFailed))
       || !expectedHash || expectedHash !== actualHash) {
       throw new Error('Orbit image receipt did not match the downloaded bytes')
     }
@@ -184,6 +197,8 @@ export class OrbitApi {
       width: expectedDimensions[0],
       height: expectedDimensions[1],
       aspectRatio,
+      transparentBackground,
+      backgroundRemovalFailed,
       costUsd: Number(response.headers.get('x-orbit-cost-usd')) || 0,
       runCostUsd: Number(response.headers.get('x-orbit-run-cost-usd')) || 0,
     }

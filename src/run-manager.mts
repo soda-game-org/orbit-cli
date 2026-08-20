@@ -24,7 +24,7 @@ import {
   transitionAgentExecutionState,
   type OrbitAgentToolResult,
 } from '@soda_game/orbit-agent-core'
-import { agentTools, providerAssetResult, ToolExecutor } from './tools.mjs'
+import { agentTools, providerAssetResult, providerImageToolResult, ToolExecutor } from './tools.mjs'
 import { publicGenericSkill } from './provider.mjs'
 import { providerCredentialAccount } from './credentials.mjs'
 import { OrbitApiError } from './api.mjs'
@@ -102,7 +102,11 @@ function providerCompatibleMessages(run: OrbitRun): OrbitMessage[] {
     }
     if (message.role === 'tool' && typeof message.tool_call_id === 'string') {
       const toolName = toolByCallId.get(message.tool_call_id) || ''
-      if (['generate_image', 'generate_3d_model'].includes(toolName)) {
+      if ((IMAGE_ASSET_TOOL_NAMES as readonly string[]).includes(toolName)) {
+        let parsed: Dynamic = {}
+        try { parsed = JSON.parse(String(message.content || '')) } catch {}
+        message.content = JSON.stringify(providerImageToolResult(parsed))
+      } else if (toolName === 'generate_3d_model') {
         let parsed: Dynamic = {}
         try { parsed = JSON.parse(String(message.content || '')) } catch {}
         message.content = JSON.stringify(providerAssetResult(parsed))
@@ -264,7 +268,11 @@ function normalizeCompletedLegacyTranscript(source: OrbitMessage[]): OrbitMessag
     }
     for (const call of calls) {
       let result = results.get(call.id)
-      if (result && ['generate_image', 'generate_3d_model'].includes(call.function.name)) {
+      if (result && (IMAGE_ASSET_TOOL_NAMES as readonly string[]).includes(call.function.name)) {
+        let parsed: Dynamic
+        try { parsed = JSON.parse(String(result.content || '')) } catch { throw new Error('Legacy asset tool result is not valid JSON') }
+        result = { ...result, content: JSON.stringify(providerImageToolResult(parsed)) }
+      } else if (result && call.function.name === 'generate_3d_model') {
         let parsed: Dynamic
         try { parsed = JSON.parse(String(result.content || '')) } catch { throw new Error('Legacy asset tool result is not valid JSON') }
         result = { ...result, content: JSON.stringify(providerAssetResult(parsed)) }
@@ -350,11 +358,13 @@ function assertPendingToolBatchBinding(run: OrbitRun): void {
   }
 }
 
+const IMAGE_ASSET_TOOL_NAMES = ['generate_image', 'generate_spritesheet', 'generate_game_map'] as const
+
 function pendingToolRequiresUnsafeRetry(run: OrbitRun): boolean {
   const pending = run.pendingTool
   if (!pending) return false
   if (pending.name === 'shell') return true
-  if (pending.name === 'generate_image') {
+  if ((IMAGE_ASSET_TOOL_NAMES as readonly string[]).includes(pending.name)) {
     if (run.lastError?.code === 'IMAGE_PROVIDER_RESUME_REQUIRED') return false
     const state = run.assetImages?.[pending.id]
     if (state?.output) return false
@@ -1158,7 +1168,7 @@ export class RunManager {
     if (!run.pendingTool) {
       const completed = new Set(journal.results.map((result: Dynamic) => String(result.tool_call_id || '')))
       const uncertain = journal.calls.find((call: Dynamic) => !completed.has(String(call.id || ''))
-        && ['shell', 'generate_image', 'generate_3d_model'].includes(String(call.function?.name || '')))
+        && ['shell', ...IMAGE_ASSET_TOOL_NAMES, 'generate_3d_model'].includes(String(call.function?.name || '')))
       if (uncertain) {
         const uncertainFunction = uncertain.function as { name?: unknown; arguments?: unknown }
         run.pendingTool = {
@@ -1215,7 +1225,7 @@ export class RunManager {
       const name = typedCall.function.name
       if (run.pendingTool && run.pendingTool.id !== typedCall.id) throw new Error('Saved pending tool does not match its tool-batch journal')
       run.pendingTool = { id: typedCall.id, name, arguments: typedCall.function.arguments, startedAt: new Date().toISOString() }
-      if (['shell', 'generate_image', 'generate_3d_model'].includes(name)) run.unsafeResumeRequired = true
+      if (['shell', ...IMAGE_ASSET_TOOL_NAMES, 'generate_3d_model'].includes(name)) run.unsafeResumeRequired = true
       await this.store.save(run)
       const started = Date.now()
       await this.#event(run, 'tool_started', { toolName: name, iteration: run.iteration })

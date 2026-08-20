@@ -519,7 +519,7 @@ export interface OrbitAgentConversationTransition {
   recoveredSteers?: OrbitAgentConversationInput[]
 }
 
-export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.5.2'
+export const ORBIT_AGENT_CORE_VERSION: 'orbit-agent-core/0.6.0'
 /** @deprecated Use ORBIT_AGENT_CORE_VERSION. */
 export const ORBIT_PRO_AGENT_CORE_VERSION: typeof ORBIT_AGENT_CORE_VERSION
 export const ORBIT_AGENT_EXECUTION_POLICY: Readonly<OrbitAgentExecutionPolicy>
@@ -551,6 +551,10 @@ export const ORBIT_AGENT_STORE_MEDIA_ROLES: Readonly<{
   listingCover: Readonly<{ role: 'listing_cover'; aspectRatio: '3:4'; preferredWidth: 768; preferredHeight: 1024; requiredForPlayable: false }>
   appIcon: Readonly<{ role: 'app_icon'; aspectRatio: '1:1'; preferredWidth: 512; preferredHeight: 512; requiredForPlayable: false }>
 }>
+export const ORBIT_AGENT_IMAGE_SCHEMA: 'orbit.agent-image.v1'
+export const ORBIT_AGENT_IMAGE_CAPABILITY_SCHEMA: 'orbit.agent-image-capability.v1'
+export const ORBIT_AGENT_IMAGE_KINDS: readonly ['sprite', 'background', 'tile', 'ui_icon', 'cover', 'texture', 'other']
+export const ORBIT_AGENT_IMAGE_ASPECT_RATIOS: readonly ['1:1', '3:4', '4:3', '9:16', '16:9']
 export const ORBIT_AGENT_CAPABILITY_PROFILE_SCHEMA: 'orbit.agent-capability-profile.v1'
 export const ORBIT_AGENT_SEMANTIC_SUMMARY_SCHEMA: 'orbit.agent-semantic-summary.v1'
 export const ORBIT_AGENT_CHECKPOINT_SCHEMA: 'orbit.agent-checkpoint.v1'
@@ -589,6 +593,76 @@ export function normalizeAgentStoreMediaManifest(
   raw: unknown,
   options?: { projectId?: string; updatedAt?: string },
 ): OrbitAgentStoreMediaManifest
+export type OrbitAgentImageKind = typeof ORBIT_AGENT_IMAGE_KINDS[number]
+export type OrbitAgentImageAspectRatio = typeof ORBIT_AGENT_IMAGE_ASPECT_RATIOS[number]
+export interface OrbitAgentImageCapabilities {
+  schema: 'orbit.agent-image-capability.v1'
+  route: 'none' | 'managed' | 'byok'
+  generate: boolean
+  backgroundRemoval: boolean
+  controlImage: boolean
+  spritesheet: boolean
+  gameMap: boolean
+  visionReview: boolean
+  localMaterialization: boolean
+}
+export interface OrbitAgentImageIntent {
+  schema: 'orbit.agent-image.v1'
+  prompt: string
+  kind: OrbitAgentImageKind
+  outputPath?: string
+  aspectRatio?: OrbitAgentImageAspectRatio
+  width?: number
+  height?: number
+  transparentBackground: boolean
+}
+export interface OrbitAgentImageArtifact {
+  schema: 'orbit.agent-image.v1'
+  artifactId: string
+  projectPath?: string
+  artifactRef?: string
+  mediaType: string
+  sha256?: string
+  width?: number
+  height?: number
+  bytes?: number
+  transparentBackground?: true
+  backgroundRemovalFailed?: true
+  recovered?: true
+  reused?: true
+}
+export function normalizeAgentImageCapabilities(raw?: unknown): Readonly<OrbitAgentImageCapabilities>
+export function normalizeAgentImageIntent(
+  raw: unknown,
+  options?: { outputPath?: string; kind?: OrbitAgentImageKind; aspectRatio?: OrbitAgentImageAspectRatio },
+): Readonly<OrbitAgentImageIntent> | null
+export function evaluateAgentImageIntent(
+  raw: unknown,
+  capabilities?: unknown,
+): Readonly<{
+  allowed: boolean
+  reason: 'available' | 'invalid_intent' | 'image_generation_unavailable' | 'background_removal_unavailable'
+  intent: Readonly<OrbitAgentImageIntent> | null
+  capabilities: Readonly<OrbitAgentImageCapabilities>
+}>
+export function projectAgentImageArtifact(
+  raw: unknown,
+  options?: { artifactId?: string; projectPath?: string; artifactRef?: string; mediaType?: string },
+): Readonly<OrbitAgentImageArtifact> | null
+export function createGenerateImageToolSpec(options?: {
+  destination?: 'workspace' | 'host'
+  description?: string
+  dimensions?: boolean
+  backgroundRemoval?: boolean
+}): Record<string, unknown>
+export function createGenerateSpritesheetToolSpec(options?: {
+  destination?: 'workspace' | 'host'
+  description?: string
+}): Record<string, unknown>
+export function createGenerateGameMapToolSpec(options?: {
+  destination?: 'workspace' | 'host'
+  description?: string
+}): Record<string, unknown>
 export function normalizeAgentInputItems(
   raw: unknown,
   options?: { fallbackId?: string },
