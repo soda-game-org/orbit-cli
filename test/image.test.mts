@@ -229,6 +229,9 @@ test('ImageService materializes a BYOK Replicate prediction as a verified local 
   t.after(() => fs.rm(root, { recursive: true, force: true }))
   const workspace = path.join(root, 'workspace')
   await fs.mkdir(workspace)
+  const validPng = await sharp({
+    create: { width: 1, height: 1, channels: 4, background: '#204060' },
+  }).png().toBuffer()
   const state = {}
   const requests = []
   const service = new ImageService({
@@ -242,7 +245,7 @@ test('ImageService materializes a BYOK Replicate prediction as a verified local 
       if (String(url).includes('/predictions/')) return Response.json({ id: 'prediction-image-1', status: 'succeeded', output: 'https://replicate.delivery/test/game.png' })
       assert.equal(String(url), 'https://replicate.delivery/test/game.png')
       assert.equal(init.redirect, 'error')
-      return new Response(PNG, { headers: { 'content-type': 'image/png' } })
+      return new Response(validPng, { headers: { 'content-type': 'image/png' } })
     },
   })
   const output = await service.generate({
@@ -255,7 +258,7 @@ test('ImageService materializes a BYOK Replicate prediction as a verified local 
   assert.equal(output.model, 'google/nano-banana')
   assert.equal(output.width, 1)
   assert.equal(output.height, 1)
-  assert.equal(sha256(await fs.readFile(output.path)), sha256(PNG))
+  assert.equal(sha256(await fs.readFile(output.path)), sha256(validPng))
   assert.deepEqual(state.output, output)
 })
 
@@ -267,9 +270,12 @@ test('ImageService runs resumable BYOK background removal and verifies real alph
   const opaquePng = await sharp({
     create: { width: 2, height: 2, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } },
   }).png().toBuffer()
-  const alphaPng = await sharp({
+  // Recraft currently serves valid alpha WebP bytes behind an output.png URL
+  // and image/png response header. The host must decode by signature and
+  // normalize the final workspace artifact to a truthful PNG.
+  const alphaWebp = await sharp({
     create: { width: 2, height: 2, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 0.25 } },
-  }).png().toBuffer()
+  }).webp().toBuffer()
   const state = {}
   const service = new ImageService({
     credentials: { get: async () => 'replicate-key' },
@@ -283,7 +289,7 @@ test('ImageService runs resumable BYOK background removal and verifies real alph
       if (value.endsWith('/predictions/remove-prediction')) {
         return Response.json({ id: 'remove-prediction', status: 'succeeded', output: 'https://replicate.delivery/alpha.png' })
       }
-      if (value === 'https://replicate.delivery/alpha.png') return new Response(alphaPng, { headers: { 'content-type': 'image/png' } })
+      if (value === 'https://replicate.delivery/alpha.png') return new Response(alphaWebp, { headers: { 'content-type': 'image/png' } })
       if (value === 'https://replicate.delivery/source.png') return new Response(opaquePng, { headers: { 'content-type': 'image/png' } })
       throw new Error(`Unexpected image request: ${value}`)
     },
@@ -296,7 +302,9 @@ test('ImageService runs resumable BYOK background removal and verifies real alph
   assert.equal(output.transparentBackground, true)
   assert.equal(output.backgroundRemovalFailed, false)
   assert.equal(state.backgroundRemoval.predictionId, 'remove-prediction')
-  assert.deepEqual(await fs.readFile(output.path), alphaPng)
+  const saved = await fs.readFile(output.path)
+  assert.deepEqual(saved.subarray(0, 8), PNG.subarray(0, 8))
+  assert.equal((await sharp(saved).metadata()).format, 'png')
 })
 
 test('ImageService requires explicit confirmation after an ambiguous Replicate submission', async (t) => {
